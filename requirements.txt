@@ -1,0 +1,13 @@
+flask
+flask-cors
+python-dotenv
+langchain
+langchain-community
+langchain-ibm
+chromadb
+sentence-transformers
+huggingface-hub
+werkzeug
+PyPDF2
+python-docx
+docling
