@@ -17,6 +17,7 @@ from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
+
 # Docling imports 
 try:
     from docling.document_converter import DocumentConverter

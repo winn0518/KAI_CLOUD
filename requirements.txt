@@ -1,10 +1,12 @@
 flask
 flask-cors
 python-dotenv
-langchain
-langchain-community
-langchain-ibm
+langchain==0.1.0
+langchain-community==0.0.20
+langchain-text-splitters==0.0.1
 chromadb
+sentence-transformers
+
 sentence-transformers
 huggingface-hub
 werkzeug
