@@ -1,199 +1,110 @@
-# app.py - Flask Backend optimized for Render
-from flask import Flask, render_template, request, jsonify
-from flask_cors import CORS
+# app.py - Flask Backend optimized for Render Free Tier
 import os
 import shutil
 import time
+from flask import Flask, render_template, request, jsonify
+from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 
 # Load environment variables first
 load_dotenv()
 
-# Configuration from .env
-IBM_URL = os.getenv("IBM_URL", "https://us-south.ml.cloud.ibm.com")
-IBM_API_KEY = os.getenv("IBM_API_KEY")
-IBM_PROJECT_ID = os.getenv("IBM_PROJECT_ID")
-
 # Flask app setup
 app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here-change-in-production')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size (reduced for free tier)
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size for free tier
 
 # Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs('templates', exist_ok=True)
-os.makedirs('static', exist_ok=True)
 
-# Initialize components (with lazy loading)
-embeddings = None
+# Configuration
 persist_directory = ".chromadb"
+ALLOWED_EXTENSIONS = {'pdf', 'txt', 'docx'}
 
-# Flags for optional dependencies
-HAS_DOCLING = False
-HAS_WATSONX = False
+# Lazy import flags
 HAS_LANGCHAIN = False
+HAS_WATSONX = False
 
-# Try to import optional dependencies
-try:
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    from langchain_community.vectorstores import Chroma
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
-    from langchain.chains import RetrievalQA
-    from langchain.prompts import PromptTemplate
-    from langchain.schema import Document
-    HAS_LANGCHAIN = True
-except ImportError as e:
-    print(f"Warning: LangChain components not available: {e}")
-
-try:
-    from langchain_ibm import WatsonxLLM
-    HAS_WATSONX = True
-except ImportError as e:
-    print(f"Warning: WatsonxLLM not available: {e}")
-
-try:
-    from docling.document_converter import DocumentConverter
-    HAS_DOCLING = True
-except ImportError as e:
-    print(f"Warning: Docling not available: {e}")
-
-# Initialize embeddings if available
-if HAS_LANGCHAIN:
+def initialize_dependencies():
+    """Lazy initialization to save memory"""
+    global HAS_LANGCHAIN, HAS_WATSONX
+    
     try:
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    except Exception as e:
-        print(f"Warning: Could not initialize embeddings: {e}")
+        # Try to import LangChain components
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        from langchain_community.vectorstores import Chroma
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
+        from langchain.chains import RetrievalQA
+        from langchain.prompts import PromptTemplate
+        from langchain.schema import Document
+        HAS_LANGCHAIN = True
+        print("✓ LangChain loaded")
+    except ImportError as e:
+        print(f"✗ LangChain not available: {e}")
+    
+    try:
+        from langchain_ibm import WatsonxLLM
+        HAS_WATSONX = True
+        print("✓ WatsonxLLM loaded")
+    except ImportError as e:
+        print(f"✗ WatsonxLLM not available: {e}")
 
-# Allowed file extensions
-ALLOWED_EXTENSIONS = {
-    'pdf', 'txt', 'docx', 'pptx', 
-    'html', 'htm', 'md', 'rtf',
-    'xlsx', 'xls', 'csv', 'tsv'
-}
+# Initialize dependencies
+initialize_dependencies()
+
+def get_embeddings():
+    """Get embeddings model (lightweight)"""
+    if not HAS_LANGCHAIN:
+        return None
+    try:
+        # Use a very lightweight model
+        from langchain_community.embeddings import HuggingFaceEmbeddings
+        return HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+    except Exception as e:
+        print(f"✗ Could not load embeddings: {e}")
+        return None
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def check_ibm_credentials():
-    """Verify IBM credentials are available"""
+    """Verify IBM credentials"""
+    IBM_API_KEY = os.getenv("IBM_API_KEY")
+    IBM_PROJECT_ID = os.getenv("IBM_PROJECT_ID")
+    IBM_URL = os.getenv("IBM_URL", "https://us-south.ml.cloud.ibm.com")
+    
     if not IBM_API_KEY or not IBM_PROJECT_ID:
-        return False, "IBM credentials not found. Please add IBM_API_KEY and IBM_PROJECT_ID to your .env file"
+        return False, "IBM credentials not found in environment variables"
     return True, ""
 
-def check_dependencies():
-    """Check if all required dependencies are available"""
-    missing = []
-    if not HAS_LANGCHAIN:
-        missing.append("LangChain")
-    if not HAS_WATSONX:
-        missing.append("IBM WatsonxLLM")
-    return missing
-
 def clear_database():
-    """Delete the existing vector database"""
+    """Clear vector database"""
     try:
         if os.path.exists(persist_directory):
-            for attempt in range(3):
-                try:
-                    shutil.rmtree(persist_directory)
-                    print(f"Database cleared successfully on attempt {attempt + 1}")
-                    return True
-                except (PermissionError, OSError) as e:
-                    if attempt < 2:
-                        time.sleep(1)
-                        continue
-                    else:
-                        print(f"Failed to clear database: {e}")
-                        return False
+            shutil.rmtree(persist_directory)
+            print("Database cleared")
+            return True
     except Exception as e:
         print(f"Error clearing database: {e}")
     return False
 
-def extract_text_from_docling_result(doc_result, original_filename):
-    """Extract text from Docling document result"""
-    documents = []
-    
-    try:
-        if not HAS_LANGCHAIN:
-            return documents
-            
-        text_content = ""
-        
-        # Try different methods to extract text
-        if hasattr(doc_result, 'export_to_text'):
-            try:
-                text_content = doc_result.export_to_text() or ""
-            except:
-                pass
-        
-        if not text_content and hasattr(doc_result, 'document'):
-            try:
-                if hasattr(doc_result.document, 'export_to_text'):
-                    text_content = doc_result.document.export_to_text() or ""
-                elif hasattr(doc_result.document, '__str__'):
-                    text_content = str(doc_result.document)
-            except:
-                pass
-        
-        if not text_content:
-            text_content = str(doc_result) if hasattr(doc_result, '__str__') else ""
-        
-        if text_content.strip():
-            doc = Document(
-                page_content=text_content,
-                metadata={
-                    "source": original_filename,
-                    "original_filename": original_filename,
-                    "format": "processed_with_docling"
-                }
-            )
-            documents.append(doc)
-            print(f"Extracted {len(text_content)} characters from {original_filename}")
-        
-    except Exception as e:
-        print(f"Error extracting text from docling result: {str(e)}")
-    
-    return documents
-
-def load_document_with_docling(file_path, original_filename):
-    """Load document using Docling"""
-    try:
-        if not HAS_DOCLING:
-            raise ImportError("Docling not available")
-        
-        print(f"Processing {original_filename} with Docling...")
-        
-        # Initialize Docling converter
-        converter = DocumentConverter()
-        
-        # Convert document
-        result = converter.convert(file_path)
-        
-        print(f"Successfully converted {original_filename}")
-        
-        # Extract text
-        documents = extract_text_from_docling_result(result, original_filename)
-        
-        return documents
-        
-    except Exception as e:
-        print(f"Error processing {original_filename} with Docling: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
-        # Fallback to basic text extraction
-        return load_document_fallback(file_path, original_filename)
-
-def load_document_fallback(file_path, original_filename):
-    """Fallback document loading"""
+def extract_text_fallback(file_path, original_filename):
+    """Simple text extraction for free tier"""
     documents = []
     
     if not HAS_LANGCHAIN:
         return documents
-        
+    
+    from langchain.schema import Document
+    
     try:
         if original_filename.lower().endswith('.txt'):
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -201,40 +112,33 @@ def load_document_fallback(file_path, original_filename):
                 if content.strip():
                     doc = Document(
                         page_content=content,
-                        metadata={
-                            "source": original_filename,
-                            "original_filename": original_filename,
-                            "format": "fallback_txt"
-                        }
+                        metadata={"source": original_filename}
                     )
                     documents.append(doc)
-                    print(f"Fallback: Extracted {len(content)} characters from TXT file")
                     
         elif original_filename.lower().endswith('.pdf'):
             try:
                 from PyPDF2 import PdfReader
                 reader = PdfReader(file_path)
                 content = ""
-                for page_num, page in enumerate(reader.pages):
+                # Only read first 5 pages to save memory
+                for page_num in range(min(5, len(reader.pages))):
+                    page = reader.pages[page_num]
                     page_text = page.extract_text()
                     if page_text:
-                        content += f"\n\n--- Page {page_num + 1} ---\n\n"
-                        content += page_text
+                        content += page_text + "\n\n"
                 
                 if content.strip():
                     doc = Document(
                         page_content=content,
                         metadata={
                             "source": original_filename,
-                            "original_filename": original_filename,
-                            "format": "fallback_pdf",
-                            "total_pages": len(reader.pages)
+                            "pages_read": min(5, len(reader.pages))
                         }
                     )
                     documents.append(doc)
-                    print(f"Fallback: Extracted {len(content)} characters from PDF file")
-            except ImportError:
-                print("PyPDF2 not installed for PDF fallback")
+            except Exception as e:
+                print(f"PDF extraction error: {e}")
                 
         elif original_filename.lower().endswith('.docx'):
             try:
@@ -245,108 +149,50 @@ def load_document_fallback(file_path, original_filename):
                 if content.strip():
                     doc = Document(
                         page_content=content,
-                        metadata={
-                            "source": original_filename,
-                            "original_filename": original_filename,
-                            "format": "fallback_docx"
-                        }
+                        metadata={"source": original_filename}
                     )
                     documents.append(doc)
-                    print(f"Fallback: Extracted {len(content)} characters from DOCX file")
-            except ImportError:
-                print("python-docx not installed for DOCX fallback")
+            except Exception as e:
+                print(f"DOCX extraction error: {e}")
                 
     except Exception as e:
-        print(f"Fallback extraction failed: {str(e)}")
+        print(f"Extraction error: {e}")
     
     return documents
-
-def process_documents(file_paths):
-    """Process uploaded documents"""
-    all_docs = []
-    
-    try:
-        for file_path, original_filename in file_paths:
-            print(f"\n--- Processing {original_filename} ---")
-            
-            documents = []
-            if HAS_DOCLING:
-                documents = load_document_with_docling(file_path, original_filename)
-            
-            if not documents:
-                documents = load_document_fallback(file_path, original_filename)
-            
-            if documents:
-                print(f"Successfully extracted {len(documents)} document chunks from {original_filename}")
-                all_docs.extend(documents)
-            else:
-                print(f"Warning: No content extracted from {original_filename}")
-        
-    except Exception as e:
-        print(f"Error processing documents: {str(e)}")
-        import traceback
-        traceback.print_exc()
-    
-    return all_docs
 
 # Routes
 @app.route('/')
 def index():
-    """Serve the main HTML page"""
+    """Serve main page"""
     return render_template('webpage.html')
 
 @app.route('/healthz')
 def health_check():
-    """Health check endpoint for Render"""
+    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
-        "dependencies": {
-            "langchain": HAS_LANGCHAIN,
-            "watsonx": HAS_WATSONX,
-            "docling": HAS_DOCLING,
-            "embeddings": embeddings is not None
-        }
+        "service": "document-qa",
+        "memory": "ok"
     }), 200
 
-@app.route('/api/check-database', methods=['GET'])
-def check_database():
-    """Check if database exists"""
-    db_exists = os.path.exists(persist_directory)
+@app.route('/api/status')
+def status():
+    """Check service status"""
     return jsonify({
-        'database_exists': db_exists,
-        'status': 'success'
+        "status": "running",
+        "langchain": HAS_LANGCHAIN,
+        "watsonx": HAS_WATSONX,
+        "database_exists": os.path.exists(persist_directory)
     })
-
-@app.route('/api/clear-database', methods=['POST'])
-def api_clear_database():
-    """Clear the vector database"""
-    try:
-        success = clear_database()
-        if success:
-            return jsonify({
-                'status': 'success',
-                'message': 'Database cleared successfully'
-            })
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': 'Failed to clear database'
-            }), 500
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
 
 @app.route('/api/upload-documents', methods=['POST'])
 def upload_documents():
-    """Handle document upload and processing"""
+    """Handle document upload"""
     # Check dependencies
-    missing_deps = check_dependencies()
-    if missing_deps:
+    if not HAS_LANGCHAIN:
         return jsonify({
             'status': 'error',
-            'message': f'Missing dependencies: {", ".join(missing_deps)}'
+            'message': 'LangChain not available'
         }), 500
     
     # Check credentials
@@ -357,7 +203,6 @@ def upload_documents():
             'message': creds_msg
         }), 400
     
-    # Check if files were uploaded
     if 'files' not in request.files:
         return jsonify({
             'status': 'error',
@@ -365,26 +210,21 @@ def upload_documents():
         }), 400
     
     files = request.files.getlist('files')
-    if len(files) == 0 or files[0].filename == '':
+    if not files or files[0].filename == '':
         return jsonify({
             'status': 'error',
             'message': 'No files selected'
         }), 400
     
-    # Get processing parameters
-    chunk_size = request.form.get('chunk_size', 1000, type=int)
-    chunk_overlap = request.form.get('chunk_overlap', 200, type=int)
-    
-    # Clear existing database
-    if os.path.exists(persist_directory):
-        clear_database()
+    # Clear old database to save memory
+    clear_database()
     
     file_paths = []
     processed_files = []
     
     try:
-        # Save uploaded files
-        for file in files:
+        # Save uploaded files (limit to 2 files for free tier)
+        for file in files[:2]:  # Limit to 2 files
             if file and allowed_file(file.filename):
                 filename = secure_filename(file.filename)
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
@@ -398,91 +238,81 @@ def upload_documents():
                 'message': 'No valid files uploaded'
             }), 400
         
-        print(f"\nStarting document processing for {len(file_paths)} files...")
-        print(f"Docling available: {HAS_DOCLING}")
+        print(f"Processing {len(file_paths)} files...")
         
-        # Process documents
-        documents = process_documents(file_paths)
+        # Extract text
+        all_docs = []
+        for file_path, filename in file_paths:
+            docs = extract_text_fallback(file_path, filename)
+            all_docs.extend(docs)
+            print(f"Extracted {len(docs)} documents from {filename}")
+            
+            # Clean up file immediately
+            if os.path.exists(file_path):
+                os.remove(file_path)
         
-        if not documents:
+        if not all_docs:
             return jsonify({
                 'status': 'error',
-                'message': 'Failed to process documents. No content could be extracted.'
+                'message': 'Could not extract text from documents'
             }), 500
         
-        print(f"\nTotal document sections extracted: {len(documents)}")
-        
-        # Split documents into chunks
+        # Split documents
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            length_function=len,
-            separators=["\n\n", "\n", " ", ""]
+            chunk_size=500,  # Smaller chunks for free tier
+            chunk_overlap=50,
+            length_function=len
         )
-        splits = text_splitter.split_documents(documents)
+        splits = text_splitter.split_documents(all_docs)
         
-        print(f"Created {len(splits)} chunks from {len(documents)} document sections")
+        print(f"Created {len(splits)} chunks")
         
-        # Create and persist vector database
-        print("Creating vector database...")
+        # Create vector database
+        embeddings = get_embeddings()
+        if not embeddings:
+            return jsonify({
+                'status': 'error',
+                'message': 'Could not initialize embeddings'
+            }), 500
+        
+        from langchain_community.vectorstores import Chroma
         vectorstore = Chroma.from_documents(
             documents=splits,
             embedding=embeddings,
             persist_directory=persist_directory
         )
         vectorstore.persist()
-        print("Vector database created and persisted successfully")
         
-        # Clean up uploaded files
-        for file_path, _ in file_paths:
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
+        # Clear memory
+        import gc
+        gc.collect()
         
         return jsonify({
             'status': 'success',
-            'message': f'Successfully processed {len(processed_files)} documents',
+            'message': f'Processed {len(processed_files)} documents',
             'data': {
-                'files_processed': len(processed_files),
-                'total_chunks': len(splits),
-                'total_sections': len(documents),
-                'avg_chunk_size': sum(len(d.page_content) for d in splits)//len(splits) if splits else 0,
-                'used_docling': HAS_DOCLING
+                'files': processed_files,
+                'chunks': len(splits)
             }
         })
         
     except Exception as e:
-        print(f"Error in upload_documents: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
-        # Clean up any remaining files
-        for file_path, _ in file_paths:
-            if os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
-        
+        print(f"Upload error: {e}")
         return jsonify({
             'status': 'error',
-            'message': f'Error processing documents: {str(e)}'
+            'message': str(e)
         }), 500
 
-@app.route('/api/ask-question', methods=['POST'])
+@app.route('/api/ask', methods=['POST'])
 def ask_question():
-    """Handle question answering"""
-    # Check dependencies
-    missing_deps = check_dependencies()
-    if missing_deps:
+    """Handle questions"""
+    if not HAS_LANGCHAIN or not HAS_WATSONX:
         return jsonify({
             'status': 'error',
-            'message': f'Missing dependencies: {", ".join(missing_deps)}'
+            'message': 'Required dependencies not available'
         }), 500
     
-    # Check credentials
     creds_ok, creds_msg = check_ibm_credentials()
     if not creds_ok:
         return jsonify({
@@ -490,14 +320,12 @@ def ask_question():
             'message': creds_msg
         }), 400
     
-    # Check if database exists
     if not os.path.exists(persist_directory):
         return jsonify({
             'status': 'error',
-            'message': 'Please upload and process documents first'
+            'message': 'Please upload documents first'
         }), 400
     
-    # Get request data
     data = request.get_json()
     if not data or 'question' not in data:
         return jsonify({
@@ -506,9 +334,6 @@ def ask_question():
         }), 400
     
     question = data['question'].strip()
-    k_value = data.get('k_value', 4)
-    temperature = data.get('temperature', 0.1)
-    
     if not question:
         return jsonify({
             'status': 'error',
@@ -516,91 +341,70 @@ def ask_question():
         }), 400
     
     try:
-        # Load existing vectorstore
+        # Load vectorstore
+        embeddings = get_embeddings()
+        from langchain_community.vectorstores import Chroma
         vectorstore = Chroma(
             persist_directory=persist_directory,
             embedding_function=embeddings
         )
         
-        # Initialize IBM Granite
+        # Initialize LLM
+        from langchain_ibm import WatsonxLLM
         llm = WatsonxLLM(
             model_id="ibm/granite-3-3-8b-instruct",
-            url=IBM_URL,
-            apikey=IBM_API_KEY,
-            project_id=IBM_PROJECT_ID,
+            url=os.getenv("IBM_URL", "https://us-south.ml.cloud.ibm.com"),
+            apikey=os.getenv("IBM_API_KEY"),
+            project_id=os.getenv("IBM_PROJECT_ID"),
             params={
-                "temperature": temperature,
-                "max_new_tokens": 512,
-                "repetition_penalty": 1.1,
-                "top_p": 0.9
+                "temperature": 0.1,
+                "max_new_tokens": 256,  # Shorter for free tier
+                "repetition_penalty": 1.1
             }
         )
         
-        # Create prompt template
-        prompt_template = """You are an intelligent document assistant. Use the following context from uploaded documents to answer the question. 
-        If the answer cannot be found in the context, say "I cannot find this information in the provided documents."
-        Provide clear citations to the source documents when possible.
-
-        Context Information:
-        {context}
-
-        Question: {question}
-
-        Please provide a detailed answer based on the context:"""
-        
-        PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["context", "question"]
-        )
-        
-        # Setup RAG chain
+        # Simple QA chain
+        from langchain.chains import RetrievalQA
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
-            retriever=vectorstore.as_retriever(search_kwargs={"k": k_value}),
-            chain_type_kwargs={"prompt": PROMPT},
-            return_source_documents=True
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 2}),  # Fewer sources
+            return_source_documents=False
         )
         
-        # Get answer
         start_time = time.time()
-        result = qa_chain({"query": question})
+        result = qa_chain.run(question)
         response_time = time.time() - start_time
         
-        # Format sources
-        sources = []
-        for i, doc in enumerate(result["source_documents"], 1):
-            sources.append({
-                'id': i,
-                'source': doc.metadata.get('source', 'Unknown Document'),
-                'format': doc.metadata.get('format', 'unknown'),
-                'content': doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content
-            })
+        # Clear memory
+        import gc
+        gc.collect()
         
         return jsonify({
             'status': 'success',
-            'data': {
-                'answer': result["result"],
-                'sources': sources,
-                'metrics': {
-                    'response_time': round(response_time, 2),
-                    'sources_used': len(result["source_documents"]),
-                    'confidence': min(len(result["source_documents"]) / k_value * 100, 100) if k_value > 0 else 0
-                }
-            }
+            'answer': result,
+            'time': round(response_time, 2)
         })
         
     except Exception as e:
-        print(f"Error processing question: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        
+        print(f"QA error: {e}")
         return jsonify({
             'status': 'error',
-            'message': f'Error processing question: {str(e)}'
+            'message': str(e)
         }), 500
+
+@app.route('/api/clear', methods=['POST'])
+def clear_data():
+    """Clear all data"""
+    clear_database()
+    return jsonify({
+        'status': 'success',
+        'message': 'Data cleared'
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    debug = os.environ.get("DEBUG", "false").lower() == "true"
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    print(f"Starting server on port {port}")
+    # Use waitress for production (lighter than gunicorn)
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=port)

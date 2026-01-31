@@ -1,32 +1,30 @@
 # Core Flask
-flask
-flask-cors
-python-dotenv
-werkzeug
+flask==2.3.3
+flask-cors==4.0.0
+python-dotenv==1.0.0
 
-# Document processing
-pypdf2
-python-docx
-docling
+# Minimal document processing
+pypdf2==3.0.1
+python-docx==1.1.0
 
-# LangChain (pinned to compatible versions)
+# LangChain (lightweight versions)
 langchain
 langchain-community
 langchain-text-splitters
 langchain-ibm
 
 # Vector database
-chromadb
+chromadb==0.4.22
 
-# Embeddings
-sentence-transformers
-huggingface-hub
-
-# ML/DL
-torch
-torchvision
-numpy
+# Embeddings (use lighter model)
+sentence-transformers==2.2.2
 
 # Utilities
-pydantic
-typing-extensions
+numpy==1.24.4
+pydantic==1.10.13
+typing-extensions==4.8.0
+
+# Remove heavy dependencies
+# docling (too heavy for free tier)
+# torch (too heavy for free tier)
+# huggingface-hub (only if needed)
