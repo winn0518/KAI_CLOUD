@@ -405,6 +405,7 @@ def clear_data():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"Starting server on port {port}")
-    # Use waitress for production (lighter than gunicorn)
-    from waitress import serve
-    serve(app, host="0.0.0.0", port=port)
+    
+    # For Render, we need to bind to the port properly
+    # Use 0.0.0.0 to bind to all interfaces
+    app.run(host="0.0.0.0", port=port, debug=False)
