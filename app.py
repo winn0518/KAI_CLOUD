@@ -17,6 +17,13 @@ from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain_community.embeddings import HuggingFaceEmbeddings
 
+# Try to import IBM WatsonxLLM
+try:
+    from langchain_ibm import WatsonxLLM
+    HAS_WATSONX = True
+except ImportError as e:
+    print(f"Warning: WatsonxLLM not available: {e}")
+    HAS_WATSONX = False
 
 # Docling imports 
 try:
@@ -33,13 +40,10 @@ try:
             HAS_DOCLING_CONFIG = False
             print("Warning: DocumentConverterConfig not found, using default settings")
 except ImportError as e:
-    print(f"Error importing docling: {e}")
+    print(f"Warning: docling not available: {e}")
     HAS_DOCLING = False
 else:
     HAS_DOCLING = True
-
-# LangChain IBM integration
-from langchain_ibm import WatsonxLLM
 
 # Load environment variables
 load_dotenv()
@@ -50,17 +54,24 @@ IBM_API_KEY = os.getenv("IBM_API_KEY")
 IBM_PROJECT_ID = os.getenv("IBM_PROJECT_ID")
 
 # Flask app setup
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
-app.config['SECRET_KEY'] = 'your-secret-key-here'
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here-change-in-production')
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB max file size
 
-# Create uploads directory if it doesn't exist
+# Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs('templates', exist_ok=True)
+os.makedirs('static', exist_ok=True)
 
 # Initialize components
-embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+try:
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+except Exception as e:
+    print(f"Warning: Could not initialize embeddings: {e}")
+    embeddings = None
+
 persist_directory = ".chromadb"
 
 # Initialize Docling converter
@@ -71,17 +82,15 @@ def get_docling_converter():
     
     try:
         if HAS_DOCLING_CONFIG:
-            
             config = DocumentConverterConfig()
-            
             config.do_table_structure = True
             config.do_caption = True
             config.do_figure_boundary = True
             converter = DocumentConverter(config=config)
         else:
-            
             converter = DocumentConverter()
             
+            # Try to set properties if they exist
             if hasattr(converter, 'do_table_structure'):
                 converter.do_table_structure = True
             if hasattr(converter, 'do_caption'):
@@ -92,7 +101,6 @@ def get_docling_converter():
         return converter
     except Exception as e:
         print(f"Error creating Docling converter: {e}")
-        
         return DocumentConverter()
 
 # Allowed file extensions
@@ -116,45 +124,23 @@ def clear_database():
     """Delete the existing vector database with proper cleanup"""
     try:
         if os.path.exists(persist_directory):
-            # Force close any open vectorstore connections
-            try:
-                gc.collect()
-            except:
-                pass
+            # Force garbage collection
+            gc.collect()
+            time.sleep(0.5)
             
-            # Add delay to ensure all file handles are released
-            time.sleep(1)
-            
-            # Strategy 1: Try normal shutil.rmtree first
-            try:
-                shutil.rmtree(persist_directory)
-                return True
-            except (PermissionError, OSError):
-                pass
-            
-            # Strategy 2: If normal deletion fails, try removing files recursively
-            try:
-                def remove_tree(path):
-                    """Recursively remove all files and directories"""
-                    if os.path.isdir(path):
-                        for item in os.listdir(path):
-                            item_path = os.path.join(path, item)
-                            if os.path.isdir(item_path):
-                                remove_tree(item_path)
-                            else:
-                                try:
-                                    os.remove(item_path)
-                                except:
-                                    import stat
-                                    os.chmod(item_path, stat.S_IWRITE)
-                                    os.remove(item_path)
-                        os.rmdir(path)
-                
-                remove_tree(persist_directory)
-                return True
-            except Exception as e:
-                print(f"Error clearing database: {e}")
-                return False
+            # Try to remove the directory
+            for attempt in range(3):
+                try:
+                    shutil.rmtree(persist_directory)
+                    print(f"Database cleared successfully on attempt {attempt + 1}")
+                    return True
+                except (PermissionError, OSError) as e:
+                    if attempt < 2:
+                        time.sleep(1)
+                        continue
+                    else:
+                        print(f"Failed to clear database after 3 attempts: {e}")
+                        return False
     except Exception as e:
         print(f"Error clearing database: {e}")
     return False
@@ -166,17 +152,17 @@ def extract_text_from_docling_result(doc_result, original_filename):
     try:
         from langchain.schema import Document
         
-        # 尝试获取文本内容
+        # Try to get text content
         text_content = ""
         
-        # 方法1: 尝试使用export_to_text
+        # Method 1: Try export_to_text
         if hasattr(doc_result, 'export_to_text'):
             try:
                 text_content = doc_result.export_to_text() or ""
             except:
                 pass
         
-        # 方法2: 尝试使用document属性
+        # Method 2: Try document attribute
         if not text_content and hasattr(doc_result, 'document'):
             try:
                 if hasattr(doc_result.document, 'export_to_text'):
@@ -186,11 +172,11 @@ def extract_text_from_docling_result(doc_result, original_filename):
             except:
                 pass
         
-        # 方法3: 直接转换为字符串
+        # Method 3: Direct string conversion
         if not text_content:
             text_content = str(doc_result) if hasattr(doc_result, '__str__') else ""
         
-        # 如果获取到了内容，创建文档
+        # Create document if we have content
         if text_content.strip():
             doc = Document(
                 page_content=text_content,
@@ -216,15 +202,15 @@ def load_document_with_docling(file_path, original_filename):
         
         print(f"Processing {original_filename} with Docling...")
         
-        # 初始化Docling转换器
+        # Initialize Docling converter
         converter = get_docling_converter()
         
-        # 转换文档
+        # Convert document
         result = converter.convert(file_path)
         
         print(f"Successfully converted {original_filename}")
         
-        # 提取文本
+        # Extract text
         documents = extract_text_from_docling_result(result, original_filename)
         
         return documents
@@ -234,7 +220,7 @@ def load_document_with_docling(file_path, original_filename):
         import traceback
         traceback.print_exc()
         
-        # 回退到基本文本提取
+        # Fallback to basic text extraction
         return load_document_fallback(file_path, original_filename)
 
 def load_document_fallback(file_path, original_filename):
@@ -259,7 +245,7 @@ def load_document_fallback(file_path, original_filename):
                     print(f"Fallback: Extracted {len(content)} characters from TXT file")
                     
         elif original_filename.lower().endswith('.pdf'):
-            # 使用PyPDF2作为PDF回退
+            # Use PyPDF2 as PDF fallback
             try:
                 from PyPDF2 import PdfReader
                 reader = PdfReader(file_path)
@@ -286,7 +272,7 @@ def load_document_fallback(file_path, original_filename):
                 print("PyPDF2 not installed for PDF fallback")
                 
         elif original_filename.lower().endswith('.docx'):
-            # 使用python-docx作为DOCX回退
+            # Use python-docx as DOCX fallback
             try:
                 from docx import Document as DocxDocument
                 doc = DocxDocument(file_path)
@@ -320,12 +306,11 @@ def process_documents(file_paths):
         for file_path, original_filename in file_paths:
             print(f"\n--- Processing {original_filename} ---")
             
-            # 首先尝试Docling
             documents = []
             if HAS_DOCLING:
                 documents = load_document_with_docling(file_path, original_filename)
             
-            # 如果Docling失败或不可用，使用回退
+            # If Docling fails or is unavailable, use fallback
             if not documents:
                 print(f"Using fallback for {original_filename}")
                 documents = load_document_fallback(file_path, original_filename)
@@ -348,6 +333,11 @@ def process_documents(file_paths):
 def index():
     """Serve the main HTML page"""
     return render_template('webpage.html')
+
+@app.route('/healthz')
+def health_check():
+    """Health check endpoint for Render"""
+    return jsonify({"status": "healthy"}), 200
 
 @app.route('/api/check-database', methods=['GET'])
 def check_database():
@@ -469,7 +459,10 @@ def upload_documents():
         # Clean up uploaded files
         for file_path, _ in file_paths:
             if os.path.exists(file_path):
-                os.remove(file_path)
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
         
         return jsonify({
             'status': 'success',
@@ -518,6 +511,13 @@ def ask_question():
             'status': 'error',
             'message': 'Please upload and process documents first'
         }), 400
+    
+    # Check if IBM WatsonxLLM is available
+    if not HAS_WATSONX:
+        return jsonify({
+            'status': 'error',
+            'message': 'IBM WatsonxLLM not available. Please check dependencies.'
+        }), 500
     
     # Get request data
     data = request.get_json()
@@ -607,7 +607,7 @@ def ask_question():
                 'metrics': {
                     'response_time': round(response_time, 2),
                     'sources_used': len(result["source_documents"]),
-                    'confidence': min(len(result["source_documents"]) / k_value * 100, 100)
+                    'confidence': min(len(result["source_documents"]) / k_value * 100, 100) if k_value > 0 else 0
                 }
             }
         })
@@ -618,10 +618,6 @@ def ask_question():
             'message': f'Error processing question: {str(e)}'
         }), 500
 
-
-import os
-
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False)
