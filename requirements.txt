@@ -1,13 +1,13 @@
 # Core Flask
-flask==2.3.3
-flask-cors==4.0.0
-python-dotenv==1.0.0
-werkzeug==2.3.7
+flask
+flask-cors
+python-dotenv
+werkzeug
 
 # Document processing
-pypdf2==3.0.1
-python-docx==1.1.0
-docling==1.4.0
+pypdf2
+python-docx
+docling
 
 # LangChain (pinned to compatible versions)
 langchain
@@ -16,17 +16,17 @@ langchain-text-splitters
 langchain-ibm
 
 # Vector database
-chromadb==0.4.22
+chromadb
 
 # Embeddings
-sentence-transformers==2.2.2
-huggingface-hub==0.20.3
+sentence-transformers
+huggingface-hub
 
 # ML/DL
-torch==2.5.0
-torchvision==0.20.0
-numpy==1.24.4
+torch
+torchvision
+numpy
 
 # Utilities
-pydantic==1.10.13
-typing-extensions==4.8.0
+pydantic
+typing-extensions
