@@ -1,9 +1,9 @@
 flask
 flask-cors
 python-dotenv
-langchain==0.1.0
-langchain-community==0.0.20
-langchain-text-splitters==0.0.1
+langchain
+langchain-community
+langchain-text-splitters
 chromadb
 sentence-transformers
 
