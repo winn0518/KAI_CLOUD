@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Document Q&A Chatbot</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .section {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        textarea, input {
+            width: 100%;
+            padding: 8px;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Document Q&A Chatbot</h1>
+        
+        <div class="section">
+            <h2>Document Upload</h2>
+            <input type="file" id="fileInput" multiple>
+            <button onclick="uploadDocuments()">Upload & Process Documents</button>
+            <div id="uploadStatus"></div>
+        </div>
+        
+        <div class="section">
+            <h2>Ask Question</h2>
+            <textarea id="questionInput" rows="3" placeholder="Enter your question here..."></textarea>
+            <button onclick="askQuestion()">Ask Question</button>
+            <div id="answer"></div>
+        </div>
+    </div>
+    
+    <script>
+        // Simple JavaScript for the interface
+        async function uploadDocuments() {
+            const fileInput = document.getElementById('fileInput');
+            const statusDiv = document.getElementById('uploadStatus');
+            
+            if (fileInput.files.length === 0) {
+                statusDiv.innerHTML = '<p style="color: red;">Please select files first.</p>';
+                return;
+            }
+            
+            statusDiv.innerHTML = '<p>Uploading and processing documents...</p>';
+            
+            const formData = new FormData();
+            for (let i = 0; i < fileInput.files.length; i++) {
+                formData.append('files', fileInput.files[i]);
+            }
+            
+            try {
+                const response = await fetch('/api/upload-documents', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                if (result.status === 'success') {
+                    statusDiv.innerHTML = `<p style="color: green;">${result.message}</p>`;
+                } else {
+                    statusDiv.innerHTML = `<p style="color: red;">Error: ${result.message}</p>`;
+                }
+            } catch (error) {
+                statusDiv.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+            }
+        }
+        
+        async function askQuestion() {
+            const questionInput = document.getElementById('questionInput');
+            const answerDiv = document.getElementById('answer');
+            
+            if (!questionInput.value.trim()) {
+                answerDiv.innerHTML = '<p style="color: red;">Please enter a question.</p>';
+                return;
+            }
+            
+            answerDiv.innerHTML = '<p>Thinking...</p>';
+            
+            try {
+                const response = await fetch('/api/ask-question', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        question: questionInput.value
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.status === 'success') {
+                    answerDiv.innerHTML = `
+                        <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px;">
+                            <h3>Answer:</h3>
+                            <p>${result.data.answer}</p>
+                            <h4>Sources:</h4>
+                            <ul>
+                                ${result.data.sources.map(source => 
+                                    `<li><strong>${source.source}</strong>: ${source.content}</li>`
+                                ).join('')}
+                            </ul>
+                        </div>
+                    `;
+                } else {
+                    answerDiv.innerHTML = `<p style="color: red;">Error: ${result.message}</p>`;
+                }
+            } catch (error) {
+                answerDiv.innerHTML = `<p style="color: red;">Error: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

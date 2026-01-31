@@ -1,51 +1,13 @@
-# app.py - Flask Backend
-from flask import Flask, render_template, request, jsonify, send_from_directory
+# app.py - Flask Backend optimized for Render
+from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 import os
 import shutil
-import tempfile
 import time
-import json
-import gc
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 
-# LangChain imports
-from langchain_community.vectorstores import Chroma
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-from langchain_community.embeddings import HuggingFaceEmbeddings
-
-# Try to import IBM WatsonxLLM
-try:
-    from langchain_ibm import WatsonxLLM
-    HAS_WATSONX = True
-except ImportError as e:
-    print(f"Warning: WatsonxLLM not available: {e}")
-    HAS_WATSONX = False
-
-# Docling imports 
-try:
-    from docling.document_converter import DocumentConverter
-    
-    try:
-        from docling.document_converter import DocumentConverterConfig
-        HAS_DOCLING_CONFIG = True
-    except ImportError:
-        try:
-            from docling import DocumentConverterConfig
-            HAS_DOCLING_CONFIG = True
-        except ImportError:
-            HAS_DOCLING_CONFIG = False
-            print("Warning: DocumentConverterConfig not found, using default settings")
-except ImportError as e:
-    print(f"Warning: docling not available: {e}")
-    HAS_DOCLING = False
-else:
-    HAS_DOCLING = True
-
-# Load environment variables
+# Load environment variables first
 load_dotenv()
 
 # Configuration from .env
@@ -58,50 +20,52 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here-change-in-production')
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size (reduced for free tier)
 
 # Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs('templates', exist_ok=True)
 os.makedirs('static', exist_ok=True)
 
-# Initialize components
-try:
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-except Exception as e:
-    print(f"Warning: Could not initialize embeddings: {e}")
-    embeddings = None
-
+# Initialize components (with lazy loading)
+embeddings = None
 persist_directory = ".chromadb"
 
-# Initialize Docling converter
-def get_docling_converter():
-    """Create and configure Docling document converter"""
-    if not HAS_DOCLING:
-        raise ImportError("Docling not installed")
-    
+# Flags for optional dependencies
+HAS_DOCLING = False
+HAS_WATSONX = False
+HAS_LANGCHAIN = False
+
+# Try to import optional dependencies
+try:
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from langchain_community.vectorstores import Chroma
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain.chains import RetrievalQA
+    from langchain.prompts import PromptTemplate
+    from langchain.schema import Document
+    HAS_LANGCHAIN = True
+except ImportError as e:
+    print(f"Warning: LangChain components not available: {e}")
+
+try:
+    from langchain_ibm import WatsonxLLM
+    HAS_WATSONX = True
+except ImportError as e:
+    print(f"Warning: WatsonxLLM not available: {e}")
+
+try:
+    from docling.document_converter import DocumentConverter
+    HAS_DOCLING = True
+except ImportError as e:
+    print(f"Warning: Docling not available: {e}")
+
+# Initialize embeddings if available
+if HAS_LANGCHAIN:
     try:
-        if HAS_DOCLING_CONFIG:
-            config = DocumentConverterConfig()
-            config.do_table_structure = True
-            config.do_caption = True
-            config.do_figure_boundary = True
-            converter = DocumentConverter(config=config)
-        else:
-            converter = DocumentConverter()
-            
-            # Try to set properties if they exist
-            if hasattr(converter, 'do_table_structure'):
-                converter.do_table_structure = True
-            if hasattr(converter, 'do_caption'):
-                converter.do_caption = True
-            if hasattr(converter, 'do_figure_boundary'):
-                converter.do_figure_boundary = True
-        
-        return converter
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     except Exception as e:
-        print(f"Error creating Docling converter: {e}")
-        return DocumentConverter()
+        print(f"Warning: Could not initialize embeddings: {e}")
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {
@@ -119,16 +83,19 @@ def check_ibm_credentials():
         return False, "IBM credentials not found. Please add IBM_API_KEY and IBM_PROJECT_ID to your .env file"
     return True, ""
 
-# Function to clear database
+def check_dependencies():
+    """Check if all required dependencies are available"""
+    missing = []
+    if not HAS_LANGCHAIN:
+        missing.append("LangChain")
+    if not HAS_WATSONX:
+        missing.append("IBM WatsonxLLM")
+    return missing
+
 def clear_database():
-    """Delete the existing vector database with proper cleanup"""
+    """Delete the existing vector database"""
     try:
         if os.path.exists(persist_directory):
-            # Force garbage collection
-            gc.collect()
-            time.sleep(0.5)
-            
-            # Try to remove the directory
             for attempt in range(3):
                 try:
                     shutil.rmtree(persist_directory)
@@ -139,7 +106,7 @@ def clear_database():
                         time.sleep(1)
                         continue
                     else:
-                        print(f"Failed to clear database after 3 attempts: {e}")
+                        print(f"Failed to clear database: {e}")
                         return False
     except Exception as e:
         print(f"Error clearing database: {e}")
@@ -150,19 +117,18 @@ def extract_text_from_docling_result(doc_result, original_filename):
     documents = []
     
     try:
-        from langchain.schema import Document
-        
-        # Try to get text content
+        if not HAS_LANGCHAIN:
+            return documents
+            
         text_content = ""
         
-        # Method 1: Try export_to_text
+        # Try different methods to extract text
         if hasattr(doc_result, 'export_to_text'):
             try:
                 text_content = doc_result.export_to_text() or ""
             except:
                 pass
         
-        # Method 2: Try document attribute
         if not text_content and hasattr(doc_result, 'document'):
             try:
                 if hasattr(doc_result.document, 'export_to_text'):
@@ -172,11 +138,9 @@ def extract_text_from_docling_result(doc_result, original_filename):
             except:
                 pass
         
-        # Method 3: Direct string conversion
         if not text_content:
             text_content = str(doc_result) if hasattr(doc_result, '__str__') else ""
         
-        # Create document if we have content
         if text_content.strip():
             doc = Document(
                 page_content=text_content,
@@ -203,7 +167,7 @@ def load_document_with_docling(file_path, original_filename):
         print(f"Processing {original_filename} with Docling...")
         
         # Initialize Docling converter
-        converter = get_docling_converter()
+        converter = DocumentConverter()
         
         # Convert document
         result = converter.convert(file_path)
@@ -224,10 +188,12 @@ def load_document_with_docling(file_path, original_filename):
         return load_document_fallback(file_path, original_filename)
 
 def load_document_fallback(file_path, original_filename):
-    """Fallback document loading when Docling fails"""
-    from langchain.schema import Document
+    """Fallback document loading"""
     documents = []
     
+    if not HAS_LANGCHAIN:
+        return documents
+        
     try:
         if original_filename.lower().endswith('.txt'):
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
@@ -245,7 +211,6 @@ def load_document_fallback(file_path, original_filename):
                     print(f"Fallback: Extracted {len(content)} characters from TXT file")
                     
         elif original_filename.lower().endswith('.pdf'):
-            # Use PyPDF2 as PDF fallback
             try:
                 from PyPDF2 import PdfReader
                 reader = PdfReader(file_path)
@@ -272,7 +237,6 @@ def load_document_fallback(file_path, original_filename):
                 print("PyPDF2 not installed for PDF fallback")
                 
         elif original_filename.lower().endswith('.docx'):
-            # Use python-docx as DOCX fallback
             try:
                 from docx import Document as DocxDocument
                 doc = DocxDocument(file_path)
@@ -297,7 +261,6 @@ def load_document_fallback(file_path, original_filename):
     
     return documents
 
-# Function to process documents
 def process_documents(file_paths):
     """Process uploaded documents"""
     all_docs = []
@@ -310,9 +273,7 @@ def process_documents(file_paths):
             if HAS_DOCLING:
                 documents = load_document_with_docling(file_path, original_filename)
             
-            # If Docling fails or is unavailable, use fallback
             if not documents:
-                print(f"Using fallback for {original_filename}")
                 documents = load_document_fallback(file_path, original_filename)
             
             if documents:
@@ -337,7 +298,15 @@ def index():
 @app.route('/healthz')
 def health_check():
     """Health check endpoint for Render"""
-    return jsonify({"status": "healthy"}), 200
+    return jsonify({
+        "status": "healthy",
+        "dependencies": {
+            "langchain": HAS_LANGCHAIN,
+            "watsonx": HAS_WATSONX,
+            "docling": HAS_DOCLING,
+            "embeddings": embeddings is not None
+        }
+    }), 200
 
 @app.route('/api/check-database', methods=['GET'])
 def check_database():
@@ -372,6 +341,14 @@ def api_clear_database():
 @app.route('/api/upload-documents', methods=['POST'])
 def upload_documents():
     """Handle document upload and processing"""
+    # Check dependencies
+    missing_deps = check_dependencies()
+    if missing_deps:
+        return jsonify({
+            'status': 'error',
+            'message': f'Missing dependencies: {", ".join(missing_deps)}'
+        }), 500
+    
     # Check credentials
     creds_ok, creds_msg = check_ibm_credentials()
     if not creds_ok:
@@ -497,6 +474,14 @@ def upload_documents():
 @app.route('/api/ask-question', methods=['POST'])
 def ask_question():
     """Handle question answering"""
+    # Check dependencies
+    missing_deps = check_dependencies()
+    if missing_deps:
+        return jsonify({
+            'status': 'error',
+            'message': f'Missing dependencies: {", ".join(missing_deps)}'
+        }), 500
+    
     # Check credentials
     creds_ok, creds_msg = check_ibm_credentials()
     if not creds_ok:
@@ -511,13 +496,6 @@ def ask_question():
             'status': 'error',
             'message': 'Please upload and process documents first'
         }), 400
-    
-    # Check if IBM WatsonxLLM is available
-    if not HAS_WATSONX:
-        return jsonify({
-            'status': 'error',
-            'message': 'IBM WatsonxLLM not available. Please check dependencies.'
-        }), 500
     
     # Get request data
     data = request.get_json()
@@ -613,6 +591,10 @@ def ask_question():
         })
         
     except Exception as e:
+        print(f"Error processing question: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
         return jsonify({
             'status': 'error',
             'message': f'Error processing question: {str(e)}'
@@ -620,4 +602,5 @@ def ask_question():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    debug = os.environ.get("DEBUG", "false").lower() == "true"
+    app.run(host="0.0.0.0", port=port, debug=debug)
