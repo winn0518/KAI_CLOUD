@@ -27,8 +27,3 @@ typing-extensions==4.8.0
 
 docx2txt==0.8
 
-huggingface-hub==0.19.4
-werkzeug==2.3.7
-gunicorn==21.2.0
-pytz==2023.3
-tqdm==4.66.1
