@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KAI Document Q&A System</title>
+    <style>
+        /* Keep all your existing CSS styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+
+        /* ... (keep all your existing CSS styles) ... */
+
+        /* Loading Spinner */
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 3px solid #0066cc;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading .spinner {
+            display: inline-block;
+        }
+
+        .loading .btn-text {
+            margin-left: 8px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-content">
+            <h1>📋 KAI Document Q&A System</h1>
+            <p>An intelligent retrieval-powered by IBM Granite & RAC Architecture</p>
+        </div>
+    </div>
+
+    <!-- Navigation -->
+    <div class="nav-container">
+        <div class="nav-tabs">
+            <button class="nav-tab active" data-tab="upload">
+                <span class="nav-icon">📁</span>
+                Upload Documents
+            </button>
+            <button class="nav-tab" data-tab="questions">
+                <span class="nav-icon">❓</span>
+                Ask Questions
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-container">
+        <!-- Upload Section -->
+        <section id="upload" class="content-section active">
+            <h2 class="section-title">Upload & Process Documents</h2>
+            <p class="section-description">Upload your documents (PDF, DOCX, or TXT) to create a searchable knowledge base. The system will process them and prepare them for Q&A.</p>
+
+            <div class="status-message" id="uploadStatus"></div>
+
+            <div class="upload-area" id="uploadArea">
+                <div style="margin-bottom: 16px;">
+                    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                </div>
+                <p class="upload-area-text">Drag and drop files here</p>
+                <p class="upload-area-subtext">Limit 50MB per file • PDF, TXT, DOCX</p>
+            </div>
+
+            <div class="button-container">
+                <button class="btn btn-secondary browse-btn" id="browseBtn">Browse files</button>
+            </div>
+
+            <div class="file-info">
+                <strong>Supported formats:</strong> PDF, TXT, DOCX<br>
+                <strong>Maximum file size:</strong> 50MB per file<br>
+                <strong>Maximum files:</strong> 2 files per upload<br>
+                <strong>Processing time:</strong> Depends on file size
+            </div>
+
+            <div class="file-list" id="fileList"></div>
+
+            <button class="action-button" id="uploadBtn">
+                <div class="spinner"></div>
+                <span class="btn-text">📤 Process Documents</span>
+            </button>
+
+            <div style="margin-top: 16px; text-align: center;">
+                <button class="btn btn-secondary" id="clearBtn" style="width: auto; padding: 8px 16px;">
+                    🗑️ Clear Database
+                </button>
+            </div>
+        </section>
+
+        <!-- Questions Section -->
+        <section id="questions" class="content-section">
+            <h2 class="section-title">Ask Questions</h2>
+            <p class="section-description">Ask questions about your uploaded documents. The system will search through your knowledge base and provide relevant answers.</p>
+
+            <div class="status-message" id="questionStatus"></div>
+
+            <div class="question-form">
+                <input 
+                    type="text" 
+                    class="question-input" 
+                    id="questionInput" 
+                    placeholder="Ask a question about your documents..."
+                >
+                <button class="btn btn-primary" id="askBtn" style="width: auto; min-width: 120px;">
+                    <div class="spinner"></div>
+                    <span class="btn-text">Ask</span>
+                </button>
+            </div>
+
+            <div class="results-container" id="resultsContainer">
+                <div class="empty-state" id="emptyState">
+                    <div class="empty-state-icon">❓</div>
+                    <p>Ask a question to get started</p>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        // State Management
+        let uploadedFiles = [];
+        let hasDocuments = false;
+
+        // DOM Elements
+        const navTabs = document.querySelectorAll('.nav-tab');
+        const contentSections = document.querySelectorAll('.content-section');
+        const uploadArea = document.getElementById('uploadArea');
+        const browseBtn = document.getElementById('browseBtn');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const fileListContainer = document.getElementById('fileList');
+        const uploadStatus = document.getElementById('uploadStatus');
+        const questionInput = document.getElementById('questionInput');
+        const askBtn = document.getElementById('askBtn');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const questionStatus = document.getElementById('questionStatus');
+        const emptyState = document.getElementById('emptyState');
+
+        // Create hidden file input
+        const hiddenFileInput = document.createElement('input');
+        hiddenFileInput.type = 'file';
+        hiddenFileInput.multiple = true;
+        hiddenFileInput.accept = '.pdf,.docx,.txt';
+        hiddenFileInput.style.display = 'none';
+        document.body.appendChild(hiddenFileInput);
+
+        // Navigation Tabs
+        navTabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabName = tab.getAttribute('data-tab');
+                
+                navTabs.forEach(t => t.classList.remove('active'));
+                contentSections.forEach(section => section.classList.remove('active'));
+                
+                tab.classList.add('active');
+                document.getElementById(tabName).classList.add('active');
+                
+                // Clear previous status messages
+                uploadStatus.className = 'status-message';
+                questionStatus.className = 'status-message';
+            });
+        });
+
+        // Check server status on load
+        checkServerStatus();
+
+        // File Upload - Browse Button
+        browseBtn.addEventListener('click', () => {
+            hiddenFileInput.click();
+        });
+
+        // File Upload - File Selection
+        hiddenFileInput.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            addFilesToUpload(files);
+        });
+
+        // File Upload - Drag and Drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = Array.from(e.dataTransfer.files);
+            addFilesToUpload(files);
+        });
+
+        // Add Files to Upload List
+        function addFilesToUpload(files) {
+            files.forEach(file => {
+                if (isValidFile(file)) {
+                    uploadedFiles.push(file);
+                }
+            });
+            renderFileList();
+        }
+
+        // Validate File
+        function isValidFile(file) {
+            const validExtensions = ['pdf', 'docx', 'txt'];
+            const maxSize = 50 * 1024 * 1024; // 50MB (matches backend)
+            
+            const extension = file.name.split('.').pop().toLowerCase();
+            
+            if (!validExtensions.includes(extension)) {
+                showMessage(uploadStatus, `Invalid file format: ${file.name}. Only PDF, DOCX, TXT allowed.`, 'error');
+                return false;
+            }
+            
+            if (file.size > maxSize) {
+                showMessage(uploadStatus, `File too large: ${file.name} (max 50MB)`, 'error');
+                return false;
+            }
+            
+            if (uploadedFiles.length >= 2) {
+                showMessage(uploadStatus, 'Maximum 2 files allowed per upload', 'error');
+                return false;
+            }
+            
+            return true;
+        }
+
+        // Render File List
+        function renderFileList() {
+            fileListContainer.innerHTML = '';
+            
+            if (uploadedFiles.length === 0) {
+                return;
+            }
+            
+            const list = document.createElement('div');
+            uploadedFiles.forEach((file, index) => {
+                const fileItem = document.createElement('div');
+                fileItem.className = 'file-item';
+                fileItem.innerHTML = `
+                    <div>
+                        <div class="file-item-name">📄 ${file.name}</div>
+                        <div class="file-item-size">${formatFileSize(file.size)}</div>
+                    </div>
+                    <button class="remove-file" data-index="${index}">✕</button>
+                `;
+                list.appendChild(fileItem);
+            });
+            
+            fileListContainer.appendChild(list);
+            
+            // Add remove file listeners
+            document.querySelectorAll('.remove-file').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.getAttribute('data-index'));
+                    uploadedFiles.splice(index, 1);
+                    renderFileList();
+                });
+            });
+        }
+
+        // Upload Documents to Backend
+        uploadBtn.addEventListener('click', async () => {
+            if (uploadedFiles.length === 0) {
+                showMessage(uploadStatus, 'Please select at least one file', 'error');
+                return;
+            }
+            
+            // Disable button and show loading
+            uploadBtn.classList.add('loading');
+            uploadBtn.disabled = true;
+            
+            // Create FormData
+            const formData = new FormData();
+            uploadedFiles.forEach(file => {
+                formData.append('files', file);
+            });
+            
+            try {
+                showMessage(uploadStatus, 'Uploading and processing documents...', 'info');
+                
+                const response = await fetch('/api/upload-documents', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showMessage(uploadStatus, result.message, 'success');
+                    hasDocuments = true;
+                    uploadedFiles = []; // Clear uploaded files list
+                    renderFileList();
+                    
+                    // Switch to questions tab after successful upload
+                    document.querySelector('[data-tab="questions"]').click();
+                    
+                    // Show success in questions tab too
+                    showMessage(questionStatus, 'Documents processed successfully! You can now ask questions.', 'success');
+                    setTimeout(() => {
+                        questionStatus.className = 'status-message';
+                    }, 3000);
+                } else {
+                    showMessage(uploadStatus, `Error: ${result.message}`, 'error');
+                }
+            } catch (error) {
+                showMessage(uploadStatus, `Upload failed: ${error.message}`, 'error');
+            } finally {
+                uploadBtn.classList.remove('loading');
+                uploadBtn.disabled = false;
+            }
+        });
+
+        // Clear Database
+        clearBtn.addEventListener('click', async () => {
+            if (!confirm('Are you sure you want to clear the database? This will remove all uploaded documents.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/clear-database', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    showMessage(uploadStatus, result.message, 'success');
+                    hasDocuments = false;
+                } else {
+                    showMessage(uploadStatus, `Error: ${result.message}`, 'error');
+                }
+            } catch (error) {
+                showMessage(uploadStatus, `Failed to clear database: ${error.message}`, 'error');
+            }
+        });
+
+        // Ask Questions
+        askBtn.addEventListener('click', askQuestion);
+        questionInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                askQuestion();
+            }
+        });
+
+        async function askQuestion() {
+            const question = questionInput.value.trim();
+            
+            if (!question) {
+                showMessage(questionStatus, 'Please enter a question', 'error');
+                return;
+            }
+            
+            // Disable button and show loading
+            askBtn.classList.add('loading');
+            askBtn.disabled = true;
+            
+            try {
+                showMessage(questionStatus, 'Searching through documents...', 'info');
+                
+                const response = await fetch('/api/ask-question', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ question: question })
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    displayResults(result.data);
+                    questionStatus.className = 'status-message';
+                } else {
+                    showMessage(questionStatus, `Error: ${result.message}`, 'error');
+                    // If no documents uploaded, suggest uploading
+                    if (result.message.includes('upload documents')) {
+                        setTimeout(() => {
+                            document.querySelector('[data-tab="upload"]').click();
+                        }, 2000);
+                    }
+                }
+            } catch (error) {
+                showMessage(questionStatus, `Failed to get answer: ${error.message}`, 'error');
+            } finally {
+                askBtn.classList.remove('loading');
+                askBtn.disabled = false;
+            }
+        }
+
+        // Display Results from Backend
+        function displayResults(data) {
+            const { answer, sources, metrics } = data;
+            
+            resultsContainer.innerHTML = '';
+            
+            // Hide empty state
+            emptyState.style.display = 'none';
+            
+            // Show answer
+            const answerContainer = document.createElement('div');
+            answerContainer.className = 'result-item';
+            answerContainer.style.marginBottom = '24px';
+            answerContainer.style.backgroundColor = '#1a2a3a';
+            answerContainer.innerHTML = `
+                <div style="margin-bottom: 12px;">
+                    <span style="background-color: #0066cc; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+                        🤖 Answer
+                    </span>
+                </div>
+                <div class="result-content" style="font-size: 15px; line-height: 1.6;">${answer}</div>
+            `;
+            resultsContainer.appendChild(answerContainer);
+            
+            // Show metrics
+            const metricsContainer = document.createElement('div');
+            metricsContainer.className = 'result-item';
+            metricsContainer.style.marginBottom = '24px';
+            metricsContainer.innerHTML = `
+                <div style="margin-bottom: 12px;">
+                    <span style="background-color: #404040; color: #e0e0e0; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+                        📊 Metrics
+                    </span>
+                </div>
+                <div style="display: flex; gap: 16px; font-size: 13px;">
+                    <div>
+                        <span style="color: #9a9a9a;">Response Time:</span>
+                        <span style="color: #e0e0e0; margin-left: 8px;">${metrics.response_time}s</span>
+                    </div>
+                    <div>
+                        <span style="color: #9a9a9a;">Sources Used:</span>
+                        <span style="color: #e0e0e0; margin-left: 8px;">${metrics.sources_used}</span>
+                    </div>
+                    <div>
+                        <span style="color: #9a9a9a;">Confidence:</span>
+                        <span style="color: #e0e0e0; margin-left: 8px;">${metrics.confidence.toFixed(0)}%</span>
+                    </div>
+                </div>
+            `;
+            resultsContainer.appendChild(metricsContainer);
+            
+            // Show sources
+            if (sources && sources.length > 0) {
+                const sourcesHeader = document.createElement('div');
+                sourcesHeader.className = 'section-title';
+                sourcesHeader.style.fontSize = '18px';
+                sourcesHeader.style.marginTop = '32px';
+                sourcesHeader.style.marginBottom = '16px';
+                sourcesHeader.textContent = '📚 Source Documents';
+                resultsContainer.appendChild(sourcesHeader);
+                
+                sources.forEach(source => {
+                    const resultItem = document.createElement('div');
+                    resultItem.className = 'result-item';
+                    resultItem.innerHTML = `
+                        <div class="result-score">Relevance: ${(source.relevance * 100).toFixed(0)}% • Source: ${source.source}</div>
+                        <div class="result-content">${source.content}</div>
+                    `;
+                    resultsContainer.appendChild(resultItem);
+                });
+            }
+        }
+
+        // Check Server Status
+        async function checkServerStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const status = await response.json();
+                
+                if (status.status === 'running') {
+                    console.log('Server is running:', status);
+                    hasDocuments = status.database_exists;
+                    
+                    if (!status.langchain || !status.watsonx) {
+                        showMessage(uploadStatus, 'Warning: Some dependencies are not available. Check server logs.', 'error');
+                    }
+                }
+            } catch (error) {
+                console.warn('Could not connect to server:', error);
+                showMessage(uploadStatus, 'Warning: Could not connect to server. Make sure the backend is running.', 'error');
+            }
+        }
+
+        // Utility Functions
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        function showMessage(element, message, type) {
+            element.textContent = message;
+            element.className = `status-message ${type}`;
+        }
+    </script>
+</body>
+</html>
