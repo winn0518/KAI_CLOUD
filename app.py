@@ -15,7 +15,7 @@ app = Flask(__name__, static_folder='static', template_folder='templates')
 CORS(app)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max file size for free tier
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 
 # Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -182,8 +182,31 @@ def status():
         "status": "running",
         "langchain": HAS_LANGCHAIN,
         "watsonx": HAS_WATSONX,
-        "database_exists": os.path.exists(persist_directory)
+        "database_exists": os.path.exists(persist_directory),
+        "max_file_size": "50MB",
+        "supported_formats": list(ALLOWED_EXTENSIONS)
     })
+
+@app.route('/api/clear-database', methods=['POST'])
+def api_clear_database():
+    """Clear the vector database"""
+    try:
+        success = clear_database()
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': 'Database cleared successfully'
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to clear database'
+            }), 500
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 @app.route('/api/upload-documents', methods=['POST'])
 def upload_documents():
@@ -290,10 +313,11 @@ def upload_documents():
         
         return jsonify({
             'status': 'success',
-            'message': f'Processed {len(processed_files)} documents',
+            'message': f'Successfully processed {len(processed_files)} document(s)!',
             'data': {
                 'files': processed_files,
-                'chunks': len(splits)
+                'chunks': len(splits),
+                'documents': len(all_docs)
             }
         })
         
@@ -304,7 +328,7 @@ def upload_documents():
             'message': str(e)
         }), 500
 
-@app.route('/api/ask', methods=['POST'])
+@app.route('/api/ask-question', methods=['POST'])
 def ask_question():
     """Handle questions"""
     if not HAS_LANGCHAIN or not HAS_WATSONX:
@@ -358,23 +382,52 @@ def ask_question():
             project_id=os.getenv("IBM_PROJECT_ID"),
             params={
                 "temperature": 0.1,
-                "max_new_tokens": 256,  # Shorter for free tier
+                "max_new_tokens": 500,  # Increased for better answers
                 "repetition_penalty": 1.1
             }
         )
         
-        # Simple QA chain
+        # Create prompt template
+        prompt_template = """You are an intelligent document assistant. Use the following context from uploaded documents to answer the question. 
+        If the answer cannot be found in the context, say "I cannot find this information in the provided documents."
+        Provide clear and detailed answers based on the context.
+
+        Context Information:
+        {context}
+
+        Question: {question}
+
+        Please provide a detailed answer based on the context:"""
+        
+        from langchain.prompts import PromptTemplate
+        PROMPT = PromptTemplate(
+            template=prompt_template,
+            input_variables=["context", "question"]
+        )
+        
+        # Setup RAG chain
         from langchain.chains import RetrievalQA
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 2}),  # Fewer sources
-            return_source_documents=False
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),  # Get 3 sources
+            chain_type_kwargs={"prompt": PROMPT},
+            return_source_documents=True
         )
         
         start_time = time.time()
-        result = qa_chain.run(question)
+        result = qa_chain({"query": question})
         response_time = time.time() - start_time
+        
+        # Format sources
+        sources = []
+        for i, doc in enumerate(result["source_documents"], 1):
+            sources.append({
+                'id': i,
+                'source': doc.metadata.get('source', 'Unknown Document'),
+                'content': doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content,
+                'relevance': round((1 - (i / len(result["source_documents"]))) * 0.8 + 0.2, 2)  # Simulated relevance score
+            })
         
         # Clear memory
         import gc
@@ -382,8 +435,15 @@ def ask_question():
         
         return jsonify({
             'status': 'success',
-            'answer': result,
-            'time': round(response_time, 2)
+            'data': {
+                'answer': result["result"],
+                'sources': sources,
+                'metrics': {
+                    'response_time': round(response_time, 2),
+                    'sources_used': len(sources),
+                    'confidence': min(len(sources) / 3 * 100, 100) if sources else 0
+                }
+            }
         })
         
     except Exception as e:
@@ -399,7 +459,7 @@ def clear_data():
     clear_database()
     return jsonify({
         'status': 'success',
-        'message': 'Data cleared'
+        'message': 'All data cleared successfully'
     })
 
 if __name__ == "__main__":
@@ -407,5 +467,4 @@ if __name__ == "__main__":
     print(f"Starting server on port {port}")
     
     # For Render, we need to bind to the port properly
-    # Use 0.0.0.0 to bind to all interfaces
     app.run(host="0.0.0.0", port=port, debug=False)
