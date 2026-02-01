@@ -9,10 +9,10 @@ pypdf2==3.0.1
 python-docx==1.1.0
 
 # LangChain (lightweight versions)
-langchain==0.0.354
-langchain-community==0.0.28
-langchain-text-splitters==0.0.1
-langchain-ibm==0.1.2
+langchain
+langchain-community
+langchain-text-splitters
+langchain-ibm
 
 # Vector database
 chromadb==0.4.22
