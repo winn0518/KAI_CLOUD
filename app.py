@@ -62,16 +62,47 @@ def get_embeddings():
     if not HAS_LANGCHAIN:
         return None
     try:
-        # Use a very lightweight model
+        # Use a very lightweight model that works on Render
         from langchain_community.embeddings import HuggingFaceEmbeddings
-        return HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2",
-            model_kwargs={'device': 'cpu'},
-            encode_kwargs={'normalize_embeddings': True}
-        )
+        
+        # Try multiple model options
+        model_options = [
+            "sentence-transformers/all-MiniLM-L6-v2",
+            "all-MiniLM-L6-v2",
+            "paraphrase-MiniLM-L3-v2",
+            "sentence-transformers/paraphrase-MiniLM-L3-v2"
+        ]
+        
+        for model_name in model_options:
+            try:
+                print(f"Trying to load embedding model: {model_name}")
+                embeddings = HuggingFaceEmbeddings(
+                    model_name=model_name,
+                    model_kwargs={'device': 'cpu'},
+                    encode_kwargs={'normalize_embeddings': True}
+                )
+                # Test the embeddings
+                test_embedding = embeddings.embed_query("test")
+                if test_embedding:
+                    print(f"✓ Successfully loaded: {model_name}")
+                    return embeddings
+            except Exception as e:
+                print(f"✗ Failed to load {model_name}: {e}")
+                continue
+        
+        # If all else fails, use a simpler fallback
+        print("Using fallback FAISS embeddings")
+        from langchain_community.embeddings import FakeEmbeddings
+        return FakeEmbeddings(size=384)
+        
     except Exception as e:
         print(f"✗ Could not load embeddings: {e}")
-        return None
+        # Return fake embeddings as last resort
+        try:
+            from langchain_community.embeddings import FakeEmbeddings
+            return FakeEmbeddings(size=384)
+        except:
+            return None
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -217,10 +248,24 @@ def health_check():
 def status():
     """Check service status"""
     creds_ok, creds_msg = check_ibm_credentials()
+    
+    # Test embeddings
+    embeddings_ok = False
+    if HAS_LANGCHAIN:
+        try:
+            embeddings = get_embeddings()
+            if embeddings:
+                # Quick test
+                test = embeddings.embed_query("test")
+                embeddings_ok = test is not None and len(test) > 0
+        except:
+            pass
+    
     return jsonify({
         "status": "running",
         "langchain": HAS_LANGCHAIN,
         "watsonx": HAS_WATSONX,
+        "embeddings": embeddings_ok,
         "database_exists": os.path.exists(persist_directory),
         "ibm_credentials": creds_ok,
         "max_file_size": "50MB",

@@ -1,29 +1,35 @@
-# Core Flask
-flask==2.3.3
+# Core
+Flask==2.3.3
 flask-cors==4.0.0
 python-dotenv==1.0.0
-waitress==2.1.2  # Add this for production server
+werkzeug==2.3.7
 
-# Minimal document processing
-pypdf2==3.0.1
-python-docx==1.1.0
-
-# LangChain (lightweight versions)
+# LangChain
 langchain
 langchain-community
 langchain-text-splitters
 langchain-ibm
 
-# Vector database
+# Vector Database
 chromadb==0.4.22
 
-# Embeddings (use lighter model)
+# Embeddings - Use specific versions that work on Render
 sentence-transformers==2.2.2
+transformers==4.35.2
+torch==2.1.0
+tokenizers==0.15.0
+
+# Document Processing
+PyPDF2==3.0.1
+python-docx==1.1.0
+docx2txt==0.8
+pymupdf==1.23.8
 
 # Utilities
 numpy==1.24.4
 pydantic==1.10.13
 typing-extensions==4.8.0
+tiktoken==0.5.2
 
-docx2txt==0.8
-
+# For fake embeddings fallback
+faiss-cpu==1.7.4
