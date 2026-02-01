@@ -2,7 +2,7 @@
 import os
 import shutil
 import time
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_from_directory
 from flask_cors import CORS
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
@@ -19,10 +19,11 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
 
 # Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs('static', exist_ok=True)
 os.makedirs('templates', exist_ok=True)
 
 # Configuration
-persist_directory = ".chromadb"
+persist_directory = "chroma_db"
 ALLOWED_EXTENSIONS = {'pdf', 'txt', 'docx'}
 
 # Lazy import flags
@@ -92,11 +93,11 @@ def clear_database():
             shutil.rmtree(persist_directory)
             print("Database cleared")
             return True
+        return True  # Return True even if it doesn't exist
     except Exception as e:
         print(f"Error clearing database: {e}")
     return False
 
-# In app.py, update the extract_text_fallback function:
 def extract_text_fallback(file_path, original_filename):
     """Simple text extraction for free tier"""
     documents = []
@@ -107,30 +108,26 @@ def extract_text_fallback(file_path, original_filename):
     from langchain.schema import Document
     
     try:
-        # Make sure file exists
         if not os.path.exists(file_path):
             print(f"File not found: {file_path}")
             return documents
             
         if original_filename.lower().endswith('.txt'):
-            try:
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
-                    if content.strip():
-                        doc = Document(
-                            page_content=content,
-                            metadata={"source": original_filename}
-                        )
-                        documents.append(doc)
-            except Exception as e:
-                print(f"TXT read error: {e}")
-                
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                if content.strip():
+                    doc = Document(
+                        page_content=content,
+                        metadata={"source": original_filename}
+                    )
+                    documents.append(doc)
+                    
         elif original_filename.lower().endswith('.pdf'):
             try:
                 from PyPDF2 import PdfReader
                 reader = PdfReader(file_path)
                 content = ""
-                # Read all pages (limited to 10 for free tier)
+                # Only read first 10 pages to save memory
                 max_pages = min(10, len(reader.pages))
                 for page_num in range(max_pages):
                     try:
@@ -153,6 +150,28 @@ def extract_text_fallback(file_path, original_filename):
                     documents.append(doc)
             except Exception as e:
                 print(f"PDF extraction error: {e}")
+                # Try alternative method
+                try:
+                    import fitz  # PyMuPDF
+                    doc = fitz.open(file_path)
+                    content = ""
+                    max_pages = min(10, len(doc))
+                    for page_num in range(max_pages):
+                        page = doc.load_page(page_num)
+                        content += page.get_text() + "\n\n"
+                    doc.close()
+                    
+                    if content.strip():
+                        doc = Document(
+                            page_content=content,
+                            metadata={
+                                "source": original_filename,
+                                "pages_read": max_pages
+                            }
+                        )
+                        documents.append(doc)
+                except Exception as e2:
+                    print(f"Alternative PDF extraction also failed: {e2}")
                 
         elif original_filename.lower().endswith('.docx'):
             try:
@@ -180,6 +199,11 @@ def index():
     """Serve main page"""
     return render_template('webpage.html')
 
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """Serve static files"""
+    return send_from_directory('static', filename)
+
 @app.route('/healthz')
 def health_check():
     """Health check endpoint"""
@@ -192,11 +216,13 @@ def health_check():
 @app.route('/api/status')
 def status():
     """Check service status"""
+    creds_ok, creds_msg = check_ibm_credentials()
     return jsonify({
         "status": "running",
         "langchain": HAS_LANGCHAIN,
         "watsonx": HAS_WATSONX,
         "database_exists": os.path.exists(persist_directory),
+        "ibm_credentials": creds_ok,
         "max_file_size": "50MB",
         "supported_formats": list(ALLOWED_EXTENSIONS)
     })
@@ -294,12 +320,24 @@ def upload_documents():
                 'message': 'Could not extract text from documents'
             }), 500
         
+        # Get chunk size from request
+        chunk_size = request.form.get('chunk_size', 1000)
+        chunk_overlap = request.form.get('chunk_overlap', 200)
+        
+        try:
+            chunk_size = int(chunk_size)
+            chunk_overlap = int(chunk_overlap)
+        except:
+            chunk_size = 1000
+            chunk_overlap = 200
+        
         # Split documents
         from langchain_text_splitters import RecursiveCharacterTextSplitter
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,  # Smaller chunks for free tier
-            chunk_overlap=50,
-            length_function=len
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=len,
+            separators=["\n\n", "\n", " ", ""]
         )
         splits = text_splitter.split_documents(all_docs)
         
@@ -337,6 +375,8 @@ def upload_documents():
         
     except Exception as e:
         print(f"Upload error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'status': 'error',
             'message': str(e)
@@ -345,10 +385,16 @@ def upload_documents():
 @app.route('/api/ask-question', methods=['POST'])
 def ask_question():
     """Handle questions"""
-    if not HAS_LANGCHAIN or not HAS_WATSONX:
+    if not HAS_LANGCHAIN:
         return jsonify({
             'status': 'error',
-            'message': 'Required dependencies not available'
+            'message': 'LangChain not available'
+        }), 500
+    
+    if not HAS_WATSONX:
+        return jsonify({
+            'status': 'error',
+            'message': 'Watsonx not available'
         }), 500
     
     creds_ok, creds_msg = check_ibm_credentials()
@@ -381,6 +427,12 @@ def ask_question():
     try:
         # Load vectorstore
         embeddings = get_embeddings()
+        if not embeddings:
+            return jsonify({
+                'status': 'error',
+                'message': 'Could not load embeddings'
+            }), 500
+            
         from langchain_community.vectorstores import Chroma
         vectorstore = Chroma(
             persist_directory=persist_directory,
@@ -390,28 +442,29 @@ def ask_question():
         # Initialize LLM
         from langchain_ibm import WatsonxLLM
         llm = WatsonxLLM(
-            model_id="ibm/granite-3-3-8b-instruct",
+            model_id="ibm/granite-3-8b-instruct",
             url=os.getenv("IBM_URL", "https://us-south.ml.cloud.ibm.com"),
             apikey=os.getenv("IBM_API_KEY"),
             project_id=os.getenv("IBM_PROJECT_ID"),
             params={
                 "temperature": 0.1,
-                "max_new_tokens": 500,  # Increased for better answers
+                "max_new_tokens": 500,
+                "min_new_tokens": 50,
                 "repetition_penalty": 1.1
             }
         )
         
         # Create prompt template
         prompt_template = """You are an intelligent document assistant. Use the following context from uploaded documents to answer the question. 
-        If the answer cannot be found in the context, say "I cannot find this information in the provided documents."
-        Provide clear and detailed answers based on the context.
+If the answer cannot be found in the context, say "I cannot find this information in the provided documents."
+Provide clear and detailed answers based on the context.
 
-        Context Information:
-        {context}
+Context Information:
+{context}
 
-        Question: {question}
+Question: {question}
 
-        Please provide a detailed answer based on the context:"""
+Please provide a detailed answer based on the context:"""
         
         from langchain.prompts import PromptTemplate
         PROMPT = PromptTemplate(
@@ -424,24 +477,25 @@ def ask_question():
         qa_chain = RetrievalQA.from_chain_type(
             llm=llm,
             chain_type="stuff",
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),  # Get 3 sources
+            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),
             chain_type_kwargs={"prompt": PROMPT},
             return_source_documents=True
         )
         
         start_time = time.time()
-        result = qa_chain({"query": question})
+        result = qa_chain.invoke({"query": question})
         response_time = time.time() - start_time
         
         # Format sources
         sources = []
-        for i, doc in enumerate(result["source_documents"], 1):
-            sources.append({
-                'id': i,
-                'source': doc.metadata.get('source', 'Unknown Document'),
-                'content': doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content,
-                'relevance': round((1 - (i / len(result["source_documents"]))) * 0.8 + 0.2, 2)  # Simulated relevance score
-            })
+        if "source_documents" in result:
+            for i, doc in enumerate(result["source_documents"], 1):
+                sources.append({
+                    'id': i,
+                    'source': doc.metadata.get('source', 'Unknown Document'),
+                    'content': doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content,
+                    'relevance': round((1 - (i / len(result["source_documents"]))) * 0.8 + 0.2, 2)
+                })
         
         # Clear memory
         import gc
@@ -462,19 +516,12 @@ def ask_question():
         
     except Exception as e:
         print(f"QA error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({
             'status': 'error',
             'message': str(e)
         }), 500
-
-@app.route('/api/clear', methods=['POST'])
-def clear_data():
-    """Clear all data"""
-    clear_database()
-    return jsonify({
-        'status': 'success',
-        'message': 'All data cleared successfully'
-    })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
