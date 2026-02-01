@@ -1,470 +1,361 @@
-# app.py - Flask Backend optimized for Render Free Tier
-import os
-import shutil
-import time
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify, render_template, session
 from flask_cors import CORS
-from dotenv import load_dotenv
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain.chains import RetrievalQA
+from langchain.llms import HuggingFaceHub
+import os
 from werkzeug.utils import secure_filename
+import tempfile
+import shutil
 
-# Load environment variables first
-load_dotenv()
-
-# Flask app setup
-app = Flask(__name__, static_folder='static', template_folder='templates')
+app = Flask(__name__)
 CORS(app)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
-
-# Create necessary directories
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs('templates', exist_ok=True)
+app.secret_key = 'kai-cloud-secret-key-2024'  # Required for sessions
 
 # Configuration
-persist_directory = ".chromadb"
-ALLOWED_EXTENSIONS = {'pdf', 'txt', 'docx'}
+UPLOAD_FOLDER = tempfile.gettempdir()
+ALLOWED_EXTENSIONS = {'pdf', 'txt', 'docx', 'doc'}
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# Lazy import flags
-HAS_LANGCHAIN = False
-HAS_WATSONX = False
+# Global variables
+vector_store = None
+qa_chain = None
+current_docs = []
 
-def initialize_dependencies():
-    """Lazy initialization to save memory"""
-    global HAS_LANGCHAIN, HAS_WATSONX
+def allowed_file(filename):
+    """Check if file extension is allowed"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def clear_vector_store():
+    """Clear existing vector store"""
+    global vector_store, qa_chain, current_docs
+    vector_store = None
+    qa_chain = None
+    current_docs = []
+    
+    # Clean up Chroma database
+    if os.path.exists("./chroma_db"):
+        try:
+            shutil.rmtree("./chroma_db")
+            print("Cleared Chroma database")
+        except Exception as e:
+            print(f"Error clearing Chroma DB: {e}")
+
+def load_document(file_path, file_extension):
+    """Load a single document based on file type"""
+    try:
+        print(f"Loading {file_extension} file: {file_path}")
+        
+        if file_extension == 'pdf':
+            loader = PyPDFLoader(file_path)
+        elif file_extension == 'txt':
+            loader = TextLoader(file_path, encoding='utf-8')
+        elif file_extension in ['docx', 'doc']:
+            loader = Docx2txtLoader(file_path)
+        else:
+            return []
+        
+        documents = loader.load()
+        print(f"Loaded {len(documents)} pages/sections")
+        return documents
+    except Exception as e:
+        print(f"Error loading document: {str(e)}")
+        return []
+
+def create_vector_store(documents):
+    """Create vector store from documents"""
+    global vector_store
     
     try:
-        # Try to import LangChain components
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-        from langchain_community.vectorstores import Chroma
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        from langchain.chains import RetrievalQA
-        from langchain.prompts import PromptTemplate
-        from langchain.schema import Document
-        HAS_LANGCHAIN = True
-        print("✓ LangChain loaded")
-    except ImportError as e:
-        print(f"✗ LangChain not available: {e}")
-    
-    try:
-        from langchain_ibm import WatsonxLLM
-        HAS_WATSONX = True
-        print("✓ WatsonxLLM loaded")
-    except ImportError as e:
-        print(f"✗ WatsonxLLM not available: {e}")
-
-# Initialize dependencies
-initialize_dependencies()
-
-def get_embeddings():
-    """Get embeddings model (lightweight)"""
-    if not HAS_LANGCHAIN:
-        return None
-    try:
-        # Use a very lightweight model
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-        return HuggingFaceEmbeddings(
-            model_name="all-MiniLM-L6-v2",
+        # Create better text chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=800,
+            chunk_overlap=150,
+            length_function=len,
+            separators=["\n\n", "\n", ". ", " ", ""]
+        )
+        
+        chunks = text_splitter.split_documents(documents)
+        print(f"Created {len(chunks)} text chunks")
+        
+        if len(chunks) == 0:
+            print("Warning: No text chunks created from document")
+            return False
+        
+        # Initialize embeddings with a good model
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
             model_kwargs={'device': 'cpu'},
             encode_kwargs={'normalize_embeddings': True}
         )
+        
+        # Create persistent vector store
+        vector_store = Chroma.from_documents(
+            documents=chunks,
+            embedding=embeddings,
+            persist_directory="./chroma_db",
+            collection_name="document_qa"
+        )
+        
+        # Persist the database
+        vector_store.persist()
+        print("Vector store created and persisted successfully")
+        return True
+        
     except Exception as e:
-        print(f"✗ Could not load embeddings: {e}")
-        return None
+        print(f"Error creating vector store: {str(e)}")
+        return False
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def check_ibm_credentials():
-    """Verify IBM credentials"""
-    IBM_API_KEY = os.getenv("IBM_API_KEY")
-    IBM_PROJECT_ID = os.getenv("IBM_PROJECT_ID")
-    IBM_URL = os.getenv("IBM_URL", "https://us-south.ml.cloud.ibm.com")
-    
-    if not IBM_API_KEY or not IBM_PROJECT_ID:
-        return False, "IBM credentials not found in environment variables"
-    return True, ""
-
-def clear_database():
-    """Clear vector database"""
-    try:
-        if os.path.exists(persist_directory):
-            shutil.rmtree(persist_directory)
-            print("Database cleared")
-            return True
-    except Exception as e:
-        print(f"Error clearing database: {e}")
-    return False
-
-def extract_text_fallback(file_path, original_filename):
-    """Simple text extraction for free tier"""
-    documents = []
-    
-    if not HAS_LANGCHAIN:
-        return documents
-    
-    from langchain.schema import Document
+def initialize_qa_chain():
+    """Initialize the QA chain with LLM"""
+    global vector_store, qa_chain
     
     try:
-        if original_filename.lower().endswith('.txt'):
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-                if content.strip():
-                    doc = Document(
-                        page_content=content,
-                        metadata={"source": original_filename}
-                    )
-                    documents.append(doc)
-                    
-        elif original_filename.lower().endswith('.pdf'):
-            try:
-                from PyPDF2 import PdfReader
-                reader = PdfReader(file_path)
-                content = ""
-                # Only read first 5 pages to save memory
-                for page_num in range(min(5, len(reader.pages))):
-                    page = reader.pages[page_num]
-                    page_text = page.extract_text()
-                    if page_text:
-                        content += page_text + "\n\n"
-                
-                if content.strip():
-                    doc = Document(
-                        page_content=content,
-                        metadata={
-                            "source": original_filename,
-                            "pages_read": min(5, len(reader.pages))
-                        }
-                    )
-                    documents.append(doc)
-            except Exception as e:
-                print(f"PDF extraction error: {e}")
-                
-        elif original_filename.lower().endswith('.docx'):
-            try:
-                from docx import Document as DocxDocument
-                doc = DocxDocument(file_path)
-                content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-                
-                if content.strip():
-                    doc = Document(
-                        page_content=content,
-                        metadata={"source": original_filename}
-                    )
-                    documents.append(doc)
-            except Exception as e:
-                print(f"DOCX extraction error: {e}")
-                
+        # Get HuggingFace API token from environment
+        hf_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
+        if not hf_token:
+            print("Warning: HUGGINGFACEHUB_API_TOKEN not set")
+            # For testing, you can set it here temporarily (remove in production)
+            hf_token = "your_token_here"
+        
+        # Initialize LLM - using a free model that works well
+        llm = HuggingFaceHub(
+            repo_id="google/flan-t5-large",  # Good free model for QA
+            huggingfacehub_api_token=hf_token,
+            model_kwargs={
+                "temperature": 0.1,
+                "max_length": 500,
+                "top_p": 0.95
+            }
+        )
+        
+        # Create retriever with better parameters
+        retriever = vector_store.as_retriever(
+            search_type="similarity",
+            search_kwargs={
+                "k": 3,  # Number of documents to retrieve
+                "fetch_k": 10  # Number of documents to initially fetch
+            }
+        )
+        
+        # Create QA chain
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",  # Simple chain type
+            retriever=retriever,
+            return_source_documents=True,
+            chain_type_kwargs={
+                "verbose": True
+            }
+        )
+        
+        print("QA chain initialized successfully")
+        return True
+        
     except Exception as e:
-        print(f"Extraction error: {e}")
-    
-    return documents
+        print(f"Error initializing QA chain: {str(e)}")
+        return False
 
-# Routes
 @app.route('/')
 def index():
-    """Serve main page"""
-    return render_template('webpage.html')
+    """Serve the main page"""
+    return render_template('index.html')
 
-@app.route('/healthz')
+@app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     return jsonify({
-        "status": "healthy",
-        "service": "document-qa",
-        "memory": "ok"
-    }), 200
-
-@app.route('/api/status')
-def status():
-    """Check service status"""
-    return jsonify({
-        "status": "running",
-        "langchain": HAS_LANGCHAIN,
-        "watsonx": HAS_WATSONX,
-        "database_exists": os.path.exists(persist_directory),
-        "max_file_size": "50MB",
-        "supported_formats": list(ALLOWED_EXTENSIONS)
+        'status': 'healthy',
+        'service': 'KAI Cloud Document Q&A',
+        'vector_store_ready': vector_store is not None
     })
 
-@app.route('/api/clear-database', methods=['POST'])
-def api_clear_database():
-    """Clear the vector database"""
-    try:
-        success = clear_database()
-        if success:
-            return jsonify({
-                'status': 'success',
-                'message': 'Database cleared successfully'
-            })
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': 'Failed to clear database'
-            }), 500
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        }), 500
-
-@app.route('/api/upload-documents', methods=['POST'])
-def upload_documents():
-    """Handle document upload"""
-    # Check dependencies
-    if not HAS_LANGCHAIN:
-        return jsonify({
-            'status': 'error',
-            'message': 'LangChain not available'
-        }), 500
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    """Handle file upload and processing"""
+    global current_docs
     
-    # Check credentials
-    creds_ok, creds_msg = check_ibm_credentials()
-    if not creds_ok:
+    if 'file' not in request.files:
         return jsonify({
-            'status': 'error',
-            'message': creds_msg
+            'success': False, 
+            'message': 'No file provided'
         }), 400
     
-    if 'files' not in request.files:
+    file = request.files['file']
+    
+    if file.filename == '':
         return jsonify({
-            'status': 'error',
-            'message': 'No files uploaded'
+            'success': False, 
+            'message': 'No file selected'
         }), 400
     
-    files = request.files.getlist('files')
-    if not files or files[0].filename == '':
+    if not allowed_file(file.filename):
         return jsonify({
-            'status': 'error',
-            'message': 'No files selected'
+            'success': False, 
+            'message': 'File type not allowed. Please upload PDF, TXT, DOCX, or DOC files.'
         }), 400
     
-    # Clear old database to save memory
-    clear_database()
+    # Clear previous documents
+    clear_vector_store()
     
-    file_paths = []
-    processed_files = []
+    # Save uploaded file temporarily
+    filename = secure_filename(file.filename)
+    file_extension = filename.rsplit('.', 1)[1].lower()
+    temp_filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     
     try:
-        # Save uploaded files (limit to 2 files for free tier)
-        for file in files[:2]:  # Limit to 2 files
-            if file and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                file.save(file_path)
-                file_paths.append((file_path, filename))
-                processed_files.append(filename)
+        # Save file
+        file.save(temp_filepath)
+        print(f"File saved to: {temp_filepath}")
         
-        if not file_paths:
+        # Load document
+        documents = load_document(temp_filepath, file_extension)
+        
+        if not documents:
             return jsonify({
-                'status': 'error',
-                'message': 'No valid files uploaded'
+                'success': False, 
+                'message': 'Could not extract text from the document'
             }), 400
         
-        print(f"Processing {len(file_paths)} files...")
-        
-        # Extract text
-        all_docs = []
-        for file_path, filename in file_paths:
-            docs = extract_text_fallback(file_path, filename)
-            all_docs.extend(docs)
-            print(f"Extracted {len(docs)} documents from {filename}")
-            
-            # Clean up file immediately
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        
-        if not all_docs:
+        # Create vector store
+        if not create_vector_store(documents):
             return jsonify({
-                'status': 'error',
-                'message': 'Could not extract text from documents'
+                'success': False, 
+                'message': 'Failed to process document for Q&A'
             }), 500
         
-        # Split documents
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,  # Smaller chunks for free tier
-            chunk_overlap=50,
-            length_function=len
-        )
-        splits = text_splitter.split_documents(all_docs)
-        
-        print(f"Created {len(splits)} chunks")
-        
-        # Create vector database
-        embeddings = get_embeddings()
-        if not embeddings:
+        # Initialize QA chain
+        if not initialize_qa_chain():
             return jsonify({
-                'status': 'error',
-                'message': 'Could not initialize embeddings'
+                'success': False, 
+                'message': 'Failed to initialize Q&A system'
             }), 500
         
-        from langchain_community.vectorstores import Chroma
-        vectorstore = Chroma.from_documents(
-            documents=splits,
-            embedding=embeddings,
-            persist_directory=persist_directory
-        )
-        vectorstore.persist()
-        
-        # Clear memory
-        import gc
-        gc.collect()
+        current_docs = documents
         
         return jsonify({
-            'status': 'success',
-            'message': f'Successfully processed {len(processed_files)} document(s)!',
-            'data': {
-                'files': processed_files,
-                'chunks': len(splits),
-                'documents': len(all_docs)
-            }
+            'success': True,
+            'message': f'Document uploaded successfully! Processed {len(documents)} pages.',
+            'filename': filename,
+            'pages': len(documents)
         })
         
     except Exception as e:
-        print(f"Upload error: {e}")
+        print(f"Upload error: {str(e)}")
         return jsonify({
-            'status': 'error',
-            'message': str(e)
+            'success': False, 
+            'message': f'Error processing file: {str(e)}'
         }), 500
+        
+    finally:
+        # Clean up temp file
+        if os.path.exists(temp_filepath):
+            try:
+                os.remove(temp_filepath)
+                print(f"Cleaned up temp file: {temp_filepath}")
+            except:
+                pass
 
-@app.route('/api/ask-question', methods=['POST'])
+@app.route('/ask', methods=['POST'])
 def ask_question():
-    """Handle questions"""
-    if not HAS_LANGCHAIN or not HAS_WATSONX:
-        return jsonify({
-            'status': 'error',
-            'message': 'Required dependencies not available'
-        }), 500
+    """Handle Q&A requests"""
+    global qa_chain
     
-    creds_ok, creds_msg = check_ibm_credentials()
-    if not creds_ok:
+    if not qa_chain:
         return jsonify({
-            'status': 'error',
-            'message': creds_msg
-        }), 400
-    
-    if not os.path.exists(persist_directory):
-        return jsonify({
-            'status': 'error',
-            'message': 'Please upload documents first'
+            'success': False, 
+            'message': 'Please upload a document first'
         }), 400
     
     data = request.get_json()
     if not data or 'question' not in data:
         return jsonify({
-            'status': 'error',
+            'success': False, 
             'message': 'No question provided'
         }), 400
     
     question = data['question'].strip()
     if not question:
         return jsonify({
-            'status': 'error',
-            'message': 'Please enter a question'
+            'success': False, 
+            'message': 'Question cannot be empty'
         }), 400
     
+    print(f"Processing question: {question}")
+    
     try:
-        # Load vectorstore
-        embeddings = get_embeddings()
-        from langchain_community.vectorstores import Chroma
-        vectorstore = Chroma(
-            persist_directory=persist_directory,
-            embedding_function=embeddings
-        )
-        
-        # Initialize LLM
-        from langchain_ibm import WatsonxLLM
-        llm = WatsonxLLM(
-            model_id="ibm/granite-3-3-8b-instruct",
-            url=os.getenv("IBM_URL", "https://us-south.ml.cloud.ibm.com"),
-            apikey=os.getenv("IBM_API_KEY"),
-            project_id=os.getenv("IBM_PROJECT_ID"),
-            params={
-                "temperature": 0.1,
-                "max_new_tokens": 500,  # Increased for better answers
-                "repetition_penalty": 1.1
-            }
-        )
-        
-        # Create prompt template
-        prompt_template = """You are an intelligent document assistant. Use the following context from uploaded documents to answer the question. 
-        If the answer cannot be found in the context, say "I cannot find this information in the provided documents."
-        Provide clear and detailed answers based on the context.
-
-        Context Information:
-        {context}
-
-        Question: {question}
-
-        Please provide a detailed answer based on the context:"""
-        
-        from langchain.prompts import PromptTemplate
-        PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["context", "question"]
-        )
-        
-        # Setup RAG chain
-        from langchain.chains import RetrievalQA
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=vectorstore.as_retriever(search_kwargs={"k": 3}),  # Get 3 sources
-            chain_type_kwargs={"prompt": PROMPT},
-            return_source_documents=True
-        )
-        
-        start_time = time.time()
+        # Get answer from QA chain
         result = qa_chain({"query": question})
-        response_time = time.time() - start_time
         
-        # Format sources
-        sources = []
-        for i, doc in enumerate(result["source_documents"], 1):
-            sources.append({
-                'id': i,
-                'source': doc.metadata.get('source', 'Unknown Document'),
-                'content': doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content,
-                'relevance': round((1 - (i / len(result["source_documents"]))) * 0.8 + 0.2, 2)  # Simulated relevance score
-            })
+        answer = result.get('result', 'No answer found.')
+        source_docs = result.get('source_documents', [])
         
-        # Clear memory
-        import gc
-        gc.collect()
+        # Format response
+        response_data = {
+            'success': True,
+            'answer': answer,
+            'question': question
+        }
         
-        return jsonify({
-            'status': 'success',
-            'data': {
-                'answer': result["result"],
-                'sources': sources,
-                'metrics': {
-                    'response_time': round(response_time, 2),
-                    'sources_used': len(sources),
-                    'confidence': min(len(sources) / 3 * 100, 100) if sources else 0
+        # Add source information if available
+        if source_docs:
+            sources = []
+            for i, doc in enumerate(source_docs[:3]):  # Limit to top 3
+                source_info = {
+                    'content': doc.page_content[:300] + ('...' if len(doc.page_content) > 300 else ''),
+                    'page': doc.metadata.get('page', 'N/A'),
+                    'source': doc.metadata.get('source', 'Document')
                 }
-            }
-        })
+                sources.append(source_info)
+            
+            response_data['sources'] = sources
+            response_data['source_count'] = len(sources)
+        
+        return jsonify(response_data)
         
     except Exception as e:
-        print(f"QA error: {e}")
+        print(f"Error answering question: {str(e)}")
         return jsonify({
-            'status': 'error',
-            'message': str(e)
+            'success': False, 
+            'message': f'Error processing question: {str(e)}'
         }), 500
 
-@app.route('/api/clear', methods=['POST'])
-def clear_data():
-    """Clear all data"""
-    clear_database()
-    return jsonify({
-        'status': 'success',
-        'message': 'All data cleared successfully'
-    })
+@app.route('/clear', methods=['POST'])
+def clear_documents():
+    """Clear current documents and reset"""
+    try:
+        clear_vector_store()
+        return jsonify({
+            'success': True,
+            'message': 'Documents cleared successfully'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'message': f'Error clearing documents: {str(e)}'
+        }), 500
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    print(f"Starting server on port {port}")
+if __name__ == '__main__':
+    # Create necessary directories
+    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    os.makedirs("./chroma_db", exist_ok=True)
     
-    # For Render, we need to bind to the port properly
-    app.run(host="0.0.0.0", port=port, debug=False)
+    # Print startup info
+    print("=" * 50)
+    print("KAI Cloud Document Q&A System")
+    print("=" * 50)
+    print(f"Upload folder: {app.config['UPLOAD_FOLDER']}")
+    print(f"Chroma DB path: ./chroma_db")
+    print("Server starting on http://localhost:5000")
+    print("=" * 50)
+    
+    # Run the app
+    app.run(
+        host='0.0.0.0',
+        port=5000,
+        debug=True
+    )

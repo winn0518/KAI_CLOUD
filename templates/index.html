@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KAI Cloud - Document Q&A</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+
+        header {
+            background: linear-gradient(135deg, #1a237e 0%, #311b92 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            background: linear-gradient(to right, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .logo {
+            font-size: 3em;
+            margin-bottom: 20px;
+        }
+
+        .subtitle {
+            color: #bbbbbb;
+            font-size: 1.1em;
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            padding: 30px;
+        }
+
+        @media (max-width: 768px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            border: 1px solid #e9ecef;
+        }
+
+        .panel h2 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #3a7bd5;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panel h2 i {
+            color: #3a7bd5;
+        }
+
+        .upload-section {
+            text-align: center;
+        }
+
+        .file-drop-area {
+            border: 3px dashed #3a7bd5;
+            border-radius: 10px;
+            padding: 40px 20px;
+            margin: 20px 0;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .file-drop-area:hover {
+            background: rgba(58, 123, 213, 0.1);
+            border-color: #00d2ff;
+        }
+
+        .file-drop-area.dragover {
+            background: rgba(58, 123, 213, 0.2);
+            border-color: #00d2ff;
+            transform: scale(1.02);
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .upload-btn, .ask-btn, .clear-btn {
+            background: linear-gradient(135deg, #3a7bd5 0%, #00d2ff 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin: 10px 5px;
+        }
+
+        .upload-btn:hover, .ask-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(58, 123, 213, 0.3);
+        }
+
+        .clear-btn {
+            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+        }
+
+        .clear-btn:hover {
+            box-shadow: 0 10px 20px rgba(255, 65, 108, 0.3);
+        }
+
+        .file-info {
+            margin-top: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border-left: 4px solid #3a7bd5;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3a7bd5;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .question-input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            font-size: 16px;
+            margin-bottom: 20px;
+            resize: vertical;
+            min-height: 100px;
+            transition: border-color 0.3s;
+        }
+
+        .question-input:focus {
+            outline: none;
+            border-color: #3a7bd5;
+            box-shadow: 0 0 0 3px rgba(58, 123, 213, 0.1);
+        }
+
+        .response-area {
+            min-height: 300px;
+            max-height: 500px;
+            overflow-y: auto;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-top: 20px;
+            border: 1px solid #e9ecef;
+        }
+
+        .answer {
+            font-size: 16px;
+            line-height: 1.8;
+            color: #333;
+        }
+
+        .sources {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #e9ecef;
+        }
+
+        .source-item {
+            background: #f8f9fa;
+            padding: 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            border-left: 3px solid #00d2ff;
+        }
+
+        .source-content {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        .source-meta {
+            font-size: 12px;
+            color: #888;
+            display: flex;
+            gap: 15px;
+        }
+
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 30px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #28a745;
+        }
+
+        .status-indicator.offline {
+            background: #dc3545;
+        }
+
+        .error {
+            color: #dc3545;
+            background: #f8d7da;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #dc3545;
+        }
+
+        .success {
+            color: #155724;
+            background: #d4edda;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #28a745;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .icon {
+            font-size: 1.2em;
+        }
+
+        /* Scrollbar styling */
+        .response-area::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .response-area::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        .response-area::-webkit-scrollbar-thumb {
+            background: #3a7bd5;
+            border-radius: 4px;
+        }
+
+        .response-area::-webkit-scrollbar-thumb:hover {
+            background: #00d2ff;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <i class="fas fa-cloud"></i>
+            </div>
+            <h1>KAI Cloud Document Q&A</h1>
+            <p class="subtitle">Upload documents and ask questions - Get instant AI-powered answers</p>
+        </header>
+
+        <main>
+            <div class="panel upload-section">
+                <h2><i class="fas fa-file-upload"></i> Upload Document</h2>
+                <p>Upload a PDF, TXT, DOCX, or DOC file to start asking questions</p>
+                
+                <div class="file-drop-area" id="dropArea">
+                    <i class="fas fa-cloud-upload-alt" style="font-size: 48px; color: #3a7bd5; margin-bottom: 15px;"></i>
+                    <p><strong>Drag & drop your file here</strong></p>
+                    <p style="color: #666; margin: 10px 0;">or</p>
+                    <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
+                        <i class="fas fa-folder-open"></i> Browse Files
+                    </button>
+                    <input type="file" id="fileInput" class="file-input" accept=".pdf,.txt,.docx,.doc" onchange="handleFileSelect(event)">
+                </div>
+
+                <div id="fileInfo" class="file-info hidden">
+                    <p><strong>Selected File:</strong> <span id="fileName"></span></p>
+                    <p><strong>Status:</strong> <span id="fileStatus">Ready to upload</span></p>
+                    <button class="upload-btn" onclick="uploadFile()" id="uploadBtn">
+                        <i class="fas fa-upload"></i> Process Document
+                    </button>
+                </div>
+
+                <div id="uploadLoading" class="loading hidden">
+                    <div class="spinner"></div>
+                    <p>Processing document...</p>
+                    <p id="uploadProgress">This may take a minute</p>
+                </div>
+
+                <div id="uploadResult" class="hidden"></div>
+
+                <div style="margin-top: 20px;">
+                    <button class="clear-btn" onclick="clearDocuments()">
+                        <i class="fas fa-trash"></i> Clear Documents
+                    </button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2><i class="fas fa-question-circle"></i> Ask Questions</h2>
+                <p>Ask anything about your uploaded document</p>
+                
+                <textarea 
+                    id="questionInput" 
+                    class="question-input" 
+                    placeholder="Type your question here... Example: What is the main topic of this document? What are the key findings?"></textarea>
+                
+                <button class="ask-btn" onclick="askQuestion()" id="askBtn">
+                    <i class="fas fa-paper-plane"></i> Ask Question
+                </button>
+
+                <div id="askLoading" class="loading hidden">
+                    <div class="spinner"></div>
+                    <p>Thinking...</p>
+                </div>
+
+                <div class="response-area" id="responseArea">
+                    <div id="response">
+                        <p style="text-align: center; color: #888; padding: 40px;">
+                            <i class="fas fa-comment-alt" style="font-size: 48px; margin-bottom: 15px;"></i><br>
+                            Your answers will appear here
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <div class="status-bar">
+            <div class="status-item">
+                <div class="status-indicator" id="statusIndicator"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+            <div class="status-item">
+                <i class="fas fa-database"></i>
+                <span id="docStatus">No document loaded</span>
+            </div>
+            <div class="status-item">
+                <i class="fas fa-brain"></i>
+                <span>AI Powered</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const dropArea = document.getElementById('dropArea');
+        const fileInput = document.getElementById('fileInput');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileName = document.getElementById('fileName');
+        const fileStatus = document.getElementById('fileStatus');
+        const uploadLoading = document.getElementById('uploadLoading');
+        const uploadResult = document.getElementById('uploadResult');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const questionInput = document.getElementById('questionInput');
+        const askBtn = document.getElementById('askBtn');
+        const askLoading = document.getElementById('askLoading');
+        const responseArea = document.getElementById('responseArea');
+        const responseDiv = document.getElementById('response');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const docStatus = document.getElementById('docStatus');
+        const uploadProgress = document.getElementById('uploadProgress');
+
+        let selectedFile = null;
+        let isProcessing = false;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            checkHealth();
+            setupDragAndDrop();
+        });
+
+        // Health check
+        async function checkHealth() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                
+                if (data.status === 'healthy') {
+                    statusIndicator.className = 'status-indicator';
+                    statusText.textContent = 'Connected';
+                    
+                    if (data.vector_store_ready) {
+                        docStatus.textContent = 'Document ready for Q&A';
+                    }
+                } else {
+                    throw new Error('Service not healthy');
+                }
+            } catch (error) {
+                statusIndicator.className = 'status-indicator offline';
+                statusText.textContent = 'Disconnected';
+                console.error('Health check failed:', error);
+            }
+        }
+
+        // Drag and drop setup
+        function setupDragAndDrop() {
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropArea.addEventListener(eventName, preventDefaults, false);
+            });
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropArea.addEventListener(eventName, highlight, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropArea.addEventListener(eventName, unhighlight, false);
+            });
+
+            function highlight() {
+                dropArea.classList.add('dragover');
+            }
+
+            function unhighlight() {
+                dropArea.classList.remove('dragover');
+            }
+
+            dropArea.addEventListener('drop', handleDrop, false);
+
+            function handleDrop(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                
+                if (files.length > 0) {
+                    handleFiles(files);
+                }
+            }
+        }
+
+        // Handle file selection
+        function handleFileSelect(event) {
+            const files = event.target.files;
+            if (files.length > 0) {
+                handleFiles(files);
+            }
+        }
+
+        function handleFiles(files) {
+            const file = files[0];
+            
+            // Validate file type
+            const allowedTypes = ['application/pdf', 'text/plain', 
+                                 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                                 'application/msword'];
+            const fileExtension = file.name.split('.').pop().toLowerCase();
+            const allowedExtensions = ['pdf', 'txt', 'docx', 'doc'];
+            
+            if (!allowedExtensions.includes(fileExtension)) {
+                alert('Please upload a PDF, TXT, DOCX, or DOC file.');
+                return;
+            }
+            
+            // Validate file size (max 10MB)
+            if (file.size > 10 * 1024 * 1024) {
+                alert('File size should be less than 10MB.');
+                return;
+            }
+            
+            selectedFile = file;
+            fileName.textContent = file.name;
+            fileStatus.textContent = 'Ready to upload';
+            fileInfo.classList.remove('hidden');
+            uploadResult.classList.add('hidden');
+        }
+
+        // Upload file
+        async function uploadFile() {
+            if (!selectedFile || isProcessing) return;
+            
+            isProcessing = true;
+            uploadBtn.disabled = true;
+            uploadLoading.classList.remove('hidden');
+            fileInfo.classList.add('hidden');
+            
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+            
+            try {
+                uploadProgress.textContent = 'Uploading document...';
+                
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                uploadLoading.classList.add('hidden');
+                
+                if (data.success) {
+                    uploadResult.innerHTML = `
+                        <div class="success">
+                            <p><strong>✓ Success!</strong> ${data.message}</p>
+                            <p>Pages processed: ${data.pages || 'N/A'}</p>
+                        </div>
+                    `;
+                    uploadResult.classList.remove('hidden');
+                    docStatus.textContent = `Document loaded: ${selectedFile.name}`;
+                } else {
+                    uploadResult.innerHTML = `
+                        <div class="error">
+                            <p><strong>✗ Error:</strong> ${data.message}</p>
+                        </div>
+                    `;
+                    uploadResult.classList.remove('hidden');
+                    fileInfo.classList.remove('hidden');
+                }
+                
+            } catch (error) {
+                uploadLoading.classList.add('hidden');
+                uploadResult.innerHTML = `
+                    <div class="error">
+                        <p><strong>✗ Network Error:</strong> ${error.message}</p>
+                    </div>
+                `;
+                uploadResult.classList.remove('hidden');
+                fileInfo.classList.remove('hidden');
+                console.error('Upload error:', error);
+            } finally {
+                isProcessing = false;
+                uploadBtn.disabled = false;
+                checkHealth();
+            }
+        }
+
+        // Ask question
+        async function askQuestion() {
+            const question = questionInput.value.trim();
+            
+            if (!question) {
+                alert('Please enter a question');
+                return;
+            }
+            
+            if (isProcessing) return;
+            
+            isProcessing = true;
+            askBtn.disabled = true;
+            askLoading.classList.remove('hidden');
+            
+            // Clear previous response
+            responseDiv.innerHTML = '';
+            
+            try {
+                const response = await fetch('/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ question: question })
+                });
+                
+                const data = await response.json();
+                
+                askLoading.classList.add('hidden');
+                
+                if (data.success) {
+                    let html = `
+                        <div class="answer">
+                            <p><strong>Q:</strong> ${data.question}</p>
+                            <p><strong>A:</strong> ${data.answer}</p>
+                        </div>
+                    `;
+                    
+                    if (data.sources && data.sources.length > 0) {
+                        html += `
+                            <div class="sources">
+                                <p><strong>Sources (${data.source_count || data.sources.length}):</strong></p>
+                        `;
+                        
+                        data.sources.forEach((source, index) => {
+                            html += `
+                                <div class="source-item">
+                                    <div class="source-content">${source.content}</div>
+                                    <div class="source-meta">
+                                        <span><i class="fas fa-file-alt"></i> ${source.source}</span>
+                                        <span><i class="fas fa-file"></i> Page: ${source.page}</span>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        
+                        html += `</div>`;
+                    }
+                    
+                    responseDiv.innerHTML = html;
+                    
+                    // Scroll to response
+                    responseArea.scrollTop = 0;
+                    
+                } else {
+                    responseDiv.innerHTML = `
+                        <div class="error">
+                            <p><strong>Error:</strong> ${data.message}</p>
+                            <p>Please make sure you've uploaded a document first.</p>
+                        </div>
+                    `;
+                }
+                
+            } catch (error) {
+                askLoading.classList.add('hidden');
+                responseDiv.innerHTML = `
+                    <div class="error">
+                        <p><strong>Network Error:</strong> ${error.message}</p>
+                    </div>
+                `;
+                console.error('Ask error:', error);
+            } finally {
+                isProcessing = false;
+                askBtn.disabled = false;
+                checkHealth();
+            }
+        }
+
+        // Clear documents
+        async function clearDocuments() {
+            if (!confirm('Are you sure you want to clear all documents? This will reset the Q&A system.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/clear', {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Reset UI
+                    selectedFile = null;
+                    fileInfo.classList.add('hidden');
+                    uploadResult.classList.add('hidden');
+                    uploadResult.innerHTML = '';
+                    questionInput.value = '';
+                    responseDiv.innerHTML = `
+                        <p style="text-align: center; color: #888; padding: 40px;">
+                            <i class="fas fa-comment-alt" style="font-size: 48px; margin-bottom: 15px;"></i><br>
+                            Your answers will appear here
+                        </p>
+                    `;
+                    docStatus.textContent = 'No document loaded';
+                    
+                    alert(data.message);
+                } else {
+                    alert('Error clearing documents: ' + data.message);
+                }
+            } catch (error) {
+                alert('Network error: ' + error.message);
+                console.error('Clear error:', error);
+            }
+        }
+
+        // Allow pressing Enter to ask question (Shift+Enter for new line)
+        questionInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                askQuestion();
+            }
+        });
+
+        // Auto-resize textarea
+        questionInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = (this.scrollHeight) + 'px';
+        });
+    </script>
+</body>
+</html>
